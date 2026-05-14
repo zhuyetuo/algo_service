@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Test-generated data & model weights (large CSV / pickle files)
+tests/data/
+tests/*.png
+weights/*.pkl

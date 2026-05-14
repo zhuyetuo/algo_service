@@ -4,6 +4,16 @@ Test 1 — IMU Behavior Classification
 Generates synthetic IMU data for 5 dog scenarios over 180 days,
 trains a LightGBM model on scenarios 1-3, then evaluates on all 5.
 
+Data pipeline (CSV-backed, incremental)
+----------------------------------------
+  data/imu_pool.csv            raw IMU windows (label, window_id, sample_idx, ax-gz)
+  data/features_pool.csv       extracted features (label, window_id, feat_000…feat_N)
+  data/features_{sc}_train.csv scenario training features  (label, label_int, feat_…)
+  data/features_{sc}_test.csv  scenario test features
+
+First run generates and saves everything. Subsequent runs load from CSV.
+Delete the data/ folder to force a full regeneration.
+
 Behavior classes
 ----------------
   0  UNKNOWN   (not generated in training)
@@ -28,25 +38,37 @@ Usage
 import sys, os, pickle, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+from pathlib import Path
 import numpy as np
+import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
 import lightgbm as lgb
 from tqdm import tqdm
 
-from modules.inference.model import extract_features, segment, BehaviorLabel
+from modules.inference.model import extract_features, BehaviorLabel
 
-# ── Constants ────────────────────────────────────────────────────────────────
-FS            = 50          # Hz
-WINDOW_SEC    = 3
-OVERLAP       = 0.5
-WIN_SAMPLES   = WINDOW_SEC * FS                    # 150 samples
-STEP_SAMPLES  = int(WIN_SAMPLES * (1 - OVERLAP))   # 75 samples
+# ── Paths ─────────────────────────────────────────────────────────────────────
+TESTS_DIR   = Path(__file__).parent
+DATA_DIR    = TESTS_DIR / "data"
+WEIGHTS_DIR = TESTS_DIR.parent / "weights"
 
-N_DAYS        = 180   # 6 months
-RNG           = np.random.default_rng(42)
+IMU_POOL_CSV      = DATA_DIR / "imu_pool.csv"
+FEATURES_POOL_CSV = DATA_DIR / "features_pool.csv"
+MODEL_PATH        = WEIGHTS_DIR / "behavior_lgbm.pkl"
 
-# Daily windows per class (represents realistic 6-month data volumes)
+DATA_DIR.mkdir(exist_ok=True)
+WEIGHTS_DIR.mkdir(exist_ok=True)
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+FS           = 50
+WINDOW_SEC   = 3
+WIN_SAMPLES  = WINDOW_SEC * FS    # 150
+N_DAYS_TRAIN = 180
+N_DAYS_TEST  = 30
+_POOL_SIZE   = 2000
+RNG          = np.random.default_rng(42)
+
 DAILY_WINDOWS = {
     "S1_Normal":      {BehaviorLabel.MOVEMENT: 480, BehaviorLabel.SLEEP: 350, BehaviorLabel.SCRATCH:  25},
     "S2_Active":      {BehaviorLabel.MOVEMENT: 620, BehaviorLabel.SLEEP: 220, BehaviorLabel.SCRATCH:  15},
@@ -58,8 +80,15 @@ DAILY_WINDOWS = {
 TRAIN_SCENARIOS = ["S1_Normal", "S2_Active", "S3_Calm"]
 TEST_SCENARIOS  = list(DAILY_WINDOWS.keys())
 
+CLASS_NAMES = {
+    int(BehaviorLabel.MOVEMENT): "movement",
+    int(BehaviorLabel.SLEEP):    "sleep",
+    int(BehaviorLabel.SCRATCH):  "scratch",
+}
+_LABEL_STR_TO_INT = {v: k for k, v in CLASS_NAMES.items()}
 
-# ── IMU signal generators ────────────────────────────────────────────────────
+
+# ── IMU signal generators ─────────────────────────────────────────────────────
 
 def _movement_window() -> np.ndarray:
     n = WIN_SAMPLES
@@ -68,21 +97,19 @@ def _movement_window() -> np.ndarray:
     phi   = RNG.uniform(0, 2 * np.pi)
     a_amp = RNG.uniform(0.4, 0.8)
     g_amp = RNG.uniform(0.2, 0.5)
-
-    ax = a_amp * np.sin(2 * np.pi * freq * t + phi)       + RNG.normal(0, 0.05, n)
+    ax = a_amp * np.sin(2 * np.pi * freq * t + phi)            + RNG.normal(0, 0.05, n)
     ay = a_amp * 0.6 * np.sin(2 * np.pi * freq * t + phi + 0.5) + RNG.normal(0, 0.04, n)
-    az = 9.8 + a_amp * 0.5 * np.sin(2 * np.pi * freq * t) + RNG.normal(0, 0.06, n)
-    gx = g_amp * np.sin(2 * np.pi * freq * t)             + RNG.normal(0, 0.03, n)
-    gy = g_amp * 0.8 * np.cos(2 * np.pi * freq * t)       + RNG.normal(0, 0.03, n)
+    az = 9.8 + a_amp * 0.5 * np.sin(2 * np.pi * freq * t)     + RNG.normal(0, 0.06, n)
+    gx = g_amp * np.sin(2 * np.pi * freq * t)                  + RNG.normal(0, 0.03, n)
+    gy = g_amp * 0.8 * np.cos(2 * np.pi * freq * t)            + RNG.normal(0, 0.03, n)
     gz = RNG.normal(0, 0.02, n)
     return np.column_stack([ax, ay, az, gx, gy, gz]).astype(np.float32)
 
 
 def _sleep_window() -> np.ndarray:
-    n    = WIN_SAMPLES
-    t    = np.arange(n) / FS
-    bfreq = RNG.uniform(0.2, 0.4)   # breathing
-
+    n     = WIN_SAMPLES
+    t     = np.arange(n) / FS
+    bfreq = RNG.uniform(0.2, 0.4)
     ax = 0.02 * np.sin(2 * np.pi * bfreq * t) + RNG.normal(0, 0.008, n)
     ay = RNG.normal(0, 0.008, n)
     az = 9.8 + 0.03 * np.sin(2 * np.pi * bfreq * t) + RNG.normal(0, 0.008, n)
@@ -97,14 +124,12 @@ def _scratch_window() -> np.ndarray:
     t     = np.arange(n) / FS
     freq  = RNG.uniform(4.0, 8.0)
     amp   = RNG.uniform(1.5, 3.0)
-    dom   = RNG.integers(0, 3)   # dominant accelerometer axis
-
+    dom   = RNG.integers(0, 3)
     amps_a = [0.25 * amp, 0.25 * amp, 0.25 * amp]
     amps_a[dom] = amp
-
-    ax = amps_a[0] * np.sin(2 * np.pi * freq * t)          + RNG.normal(0, 0.1, n)
+    ax = amps_a[0] * np.sin(2 * np.pi * freq * t)           + RNG.normal(0, 0.1, n)
     ay = amps_a[1] * np.sin(2 * np.pi * freq * t + np.pi/4) + RNG.normal(0, 0.1, n)
-    az = 9.8 + amps_a[2] * np.sin(2 * np.pi * freq * t)    + RNG.normal(0, 0.1, n)
+    az = 9.8 + amps_a[2] * np.sin(2 * np.pi * freq * t)     + RNG.normal(0, 0.1, n)
     gx = 0.6 * amp * np.sin(2 * np.pi * freq * t)           + RNG.normal(0, 0.05, n)
     gy = 0.5 * amp * np.cos(2 * np.pi * freq * t)           + RNG.normal(0, 0.05, n)
     gz = 0.3 * amp * np.sin(2 * np.pi * freq * t + np.pi/3) + RNG.normal(0, 0.05, n)
@@ -117,132 +142,187 @@ _GENERATORS = {
     BehaviorLabel.SCRATCH:  _scratch_window,
 }
 
-# Pool size per class: large enough for variety, small enough to build quickly
-_POOL_SIZE = 2000
 
-# Lazy-built cache: {BehaviorLabel -> (N, n_features) float32 array}
-_FEATURE_POOL: dict | None = None
+# ── Pool: build or load ───────────────────────────────────────────────────────
 
+def _build_pool() -> dict:
+    """Generate IMU windows, save imu_pool.csv + features_pool.csv, return feature arrays."""
+    imu_rows  = []
+    feat_rows = []
+    pool      = {}
 
-def _build_feature_pool() -> dict:
-    pool = {}
-    for label, gen_fn in tqdm(_GENERATORS.items(), desc="Building feature pool",
-                               unit="class", ncols=70):
-        windows = [gen_fn() for _ in range(_POOL_SIZE)]
-        pool[label] = np.array(
-            [extract_features(w, FS) for w in windows], dtype=np.float32
-        )
+    imu_cols  = ["label", "window_id", "sample_idx", "ax", "ay", "az", "gx", "gy", "gz"]
+
+    for label, gen_fn in tqdm(_GENERATORS.items(), desc="Building pool", unit="class", ncols=72):
+        label_name = CLASS_NAMES[int(label)]
+        feats = []
+        for wid in tqdm(range(_POOL_SIZE), desc=f"  {label_name}", unit="win",
+                        ncols=72, leave=False):
+            window = gen_fn()                           # (150, 6)
+            for t_idx, sample in enumerate(window):
+                imu_rows.append([label_name, wid, t_idx,
+                                 sample[0], sample[1], sample[2],
+                                 sample[3], sample[4], sample[5]])
+            feat = extract_features(window, FS)
+            feat_rows.append([label_name, wid] + feat.tolist())
+            feats.append(feat)
+        pool[label] = np.array(feats, dtype=np.float32)
+
+    # Save raw IMU
+    pd.DataFrame(imu_rows, columns=imu_cols).to_csv(IMU_POOL_CSV, index=False)
+    tqdm.write(f"  IMU pool  → {IMU_POOL_CSV}  ({len(imu_rows):,} rows)")
+
+    # Save features
+    n_feats   = pool[BehaviorLabel.MOVEMENT].shape[1]
+    feat_cols = ["label", "window_id"] + [f"feat_{i:03d}" for i in range(n_feats)]
+    pd.DataFrame(feat_rows, columns=feat_cols).to_csv(FEATURES_POOL_CSV, index=False)
+    tqdm.write(f"  Features  → {FEATURES_POOL_CSV}  ({len(feat_rows):,} rows)")
+
     return pool
 
+
+def _load_pool() -> dict:
+    """Load feature pool from features_pool.csv."""
+    df = pd.read_csv(FEATURES_POOL_CSV)
+    feat_cols = [c for c in df.columns if c.startswith("feat_")]
+    pool = {}
+    for label in _GENERATORS:
+        name = CLASS_NAMES[int(label)]
+        sub  = df[df["label"] == name][feat_cols].values.astype(np.float32)
+        pool[label] = sub
+    return pool
+
+
+_FEATURE_POOL: dict | None = None
 
 def _get_pool() -> dict:
     global _FEATURE_POOL
     if _FEATURE_POOL is None:
-        _FEATURE_POOL = _build_feature_pool()
+        if FEATURES_POOL_CSV.exists() and IMU_POOL_CSV.exists():
+            print(f"  Loading pool from {FEATURES_POOL_CSV.name} …")
+            _FEATURE_POOL = _load_pool()
+        else:
+            print("  Pool CSV not found — generating from scratch …")
+            _FEATURE_POOL = _build_pool()
     return _FEATURE_POOL
 
 
-# ── Data generation ──────────────────────────────────────────────────────────
+# ── Scenario features: build or load ─────────────────────────────────────────
 
-def generate_scenario_features(scenario_name: str, n_days: int) -> tuple[np.ndarray, np.ndarray]:
+def _feat_cols_from_pool() -> list[str]:
+    pool = _get_pool()
+    n = next(iter(pool.values())).shape[1]
+    return [f"feat_{i:03d}" for i in range(n)]
+
+
+def _scenario_csv(scenario_name: str, split: str) -> Path:
+    return DATA_DIR / f"features_{scenario_name}_{split}.csv"
+
+
+def generate_scenario_features(
+    scenario_name: str, n_days: int, split: str
+) -> tuple[np.ndarray, np.ndarray]:
     """
-    Returns (X, y) where X is (N, n_features) and y is (N,) integer labels.
-    Samples from a pre-built feature pool instead of re-generating raw IMU
-    signals each time — ~100x faster for large day counts.
+    Return (X, y) for the given scenario.
+    Loads from CSV if it exists; otherwise samples from the feature pool and saves.
+    split: 'train' | 'test'
     """
-    daily = DAILY_WINDOWS[scenario_name]
+    csv_path = _scenario_csv(scenario_name, split)
+
+    if csv_path.exists():
+        df        = pd.read_csv(csv_path)
+        feat_cols = [c for c in df.columns if c.startswith("feat_")]
+        X = df[feat_cols].values.astype(np.float32)
+        y = df["label_int"].values.astype(np.int32)
+        return X, y
+
     pool  = _get_pool()
+    daily = DAILY_WINDOWS[scenario_name]
     X_parts, y_parts = [], []
 
-    for _ in tqdm(range(n_days), desc=f"  {scenario_name}", unit="day", ncols=70, leave=False):
-        for label, n_windows_per_day in daily.items():
-            n   = max(1, int(n_windows_per_day * RNG.uniform(0.8, 1.2)))
-            idx = RNG.integers(0, _POOL_SIZE, size=n)
+    for _ in tqdm(range(n_days), desc=f"  {scenario_name}", unit="day", ncols=72, leave=False):
+        for label, n_win in daily.items():
+            n   = max(1, int(n_win * RNG.uniform(0.8, 1.2)))
+            idx = RNG.integers(0, len(pool[label]), size=n)
             X_parts.append(pool[label][idx])
             y_parts.append(np.full(n, int(label), dtype=np.int32))
 
-    return np.vstack(X_parts), np.concatenate(y_parts)
+    X = np.vstack(X_parts)
+    y = np.concatenate(y_parts)
+
+    # Persist to CSV
+    feat_cols = [f"feat_{i:03d}" for i in range(X.shape[1])]
+    df = pd.DataFrame(X, columns=feat_cols)
+    df.insert(0, "label",     [CLASS_NAMES[yi] for yi in y])
+    df.insert(1, "label_int", y)
+    df.to_csv(csv_path, index=False)
+    tqdm.write(f"  Saved → {csv_path.name}  ({len(X):,} rows)")
+
+    return X, y
 
 
-# ── Training ─────────────────────────────────────────────────────────────────
+# ── Training ──────────────────────────────────────────────────────────────────
 
-def build_training_data():
+def build_training_data() -> tuple[np.ndarray, np.ndarray]:
     print(f"\n{'='*60}")
-    print("Generating training data (scenarios: S1 / S2 / S3 × 180 days)")
+    print("Step 1 — Training data  (S1/S2/S3 × 180 days)")
     print(f"{'='*60}")
     X_list, y_list = [], []
-    for sc in tqdm(TRAIN_SCENARIOS, desc="Scenarios", unit="scenario", ncols=70):
-        t0 = time.time()
-        X, y = generate_scenario_features(sc, N_DAYS)
+    for sc in tqdm(TRAIN_SCENARIOS, desc="Scenarios", unit="sc", ncols=72):
+        t0   = time.time()
+        X, y = generate_scenario_features(sc, N_DAYS_TRAIN, split="train")
         tqdm.write(f"  {sc:20s} → {len(X):>7,} windows  ({time.time()-t0:.1f}s)")
         X_list.append(X)
         y_list.append(y)
     return np.vstack(X_list), np.concatenate(y_list)
 
 
-def train_model(X: np.ndarray, y: np.ndarray):
+def train_model(X: np.ndarray, y: np.ndarray) -> lgb.LGBMClassifier:
     X_tr, X_val, y_tr, y_val = train_test_split(
         X, y, test_size=0.2, stratify=y, random_state=42
     )
-
-    print(f"\nTraining LightGBM  (train={len(X_tr):,}  val={len(X_val):,})")
-
+    print(f"\nStep 2 — Train LightGBM  (train={len(X_tr):,}  val={len(X_val):,})")
     model = lgb.LGBMClassifier(
-        n_estimators=300,
-        learning_rate=0.05,
-        num_leaves=63,
-        max_depth=-1,
-        min_child_samples=20,
-        class_weight="balanced",
-        random_state=42,
-        n_jobs=-1,
-        verbose=-1,
+        n_estimators=300, learning_rate=0.05, num_leaves=63,
+        min_child_samples=20, class_weight="balanced",
+        random_state=42, n_jobs=-1, verbose=-1,
     )
     model.fit(
         X_tr, y_tr,
         eval_set=[(X_val, y_val)],
         callbacks=[lgb.early_stopping(30, verbose=False), lgb.log_evaluation(-1)],
     )
-
     val_acc = accuracy_score(y_val, model.predict(X_val))
-    print(f"Validation accuracy: {val_acc:.4f}")
+    print(f"  Validation accuracy: {val_acc:.4f}")
     return model
 
 
-# ── Evaluation ───────────────────────────────────────────────────────────────
+# ── Evaluation ────────────────────────────────────────────────────────────────
 
-CLASS_NAMES = {
-    int(BehaviorLabel.MOVEMENT): "movement",
-    int(BehaviorLabel.SLEEP):    "sleep",
-    int(BehaviorLabel.SCRATCH):  "scratch",
-}
-
-
-def evaluate_model(model, scenario_name: str):
-    X, y = generate_scenario_features(scenario_name, n_days=30)   # 1 month test
+def evaluate_model(model: lgb.LGBMClassifier, scenario_name: str) -> float:
+    X, y  = generate_scenario_features(scenario_name, N_DAYS_TEST, split="test")
     y_pred = model.predict(X)
 
-    acc = accuracy_score(y, y_pred)
+    acc          = accuracy_score(y, y_pred)
+    labels       = sorted(CLASS_NAMES.keys())
+    target_names = [CLASS_NAMES[l] for l in labels]
+
     print(f"   Samples  : {len(y):,}  (30-day held-out)")
     print(f"   Accuracy : {acc:.4f}")
-
-    labels = sorted(CLASS_NAMES.keys())
-    target_names = [CLASS_NAMES[l] for l in labels]
-    print(classification_report(y, y_pred, labels=labels, target_names=target_names, digits=3))
+    print(classification_report(y, y_pred, labels=labels,
+                                target_names=target_names, digits=3))
 
     cm = confusion_matrix(y, y_pred, labels=labels)
     print("   Confusion matrix (rows=true, cols=pred):")
-    header = "            " + "  ".join(f"{n:>8}" for n in target_names)
-    print(header)
+    print("            " + "  ".join(f"{n:>8}" for n in target_names))
     for i, name in enumerate(target_names):
         row = "  ".join(f"{cm[i, j]:>8}" for j in range(len(labels)))
         print(f"  {name:>10}: {row}")
 
-    # Scratch-specific metrics (most important)
-    sc_idx = labels.index(int(BehaviorLabel.SCRATCH))
-    tp = cm[sc_idx, sc_idx]
-    fn = cm[sc_idx].sum() - tp
-    fp = cm[:, sc_idx].sum() - tp
+    sc_idx    = labels.index(int(BehaviorLabel.SCRATCH))
+    tp        = cm[sc_idx, sc_idx]
+    fn        = cm[sc_idx].sum() - tp
+    fp        = cm[:, sc_idx].sum() - tp
     precision = tp / (tp + fp) if (tp + fp) else 0
     recall    = tp / (tp + fn) if (tp + fn) else 0
     f1        = 2 * precision * recall / (precision + recall) if (precision + recall) else 0
@@ -250,24 +330,22 @@ def evaluate_model(model, scenario_name: str):
     return acc
 
 
-# ── Feature importance ───────────────────────────────────────────────────────
-
-def show_top_features(model, top_n: int = 15):
+def show_top_features(model: lgb.LGBMClassifier, top_n: int = 15) -> None:
     importance = model.feature_importances_
-    idx = np.argsort(importance)[::-1][:top_n]
-    print(f"\nTop {top_n} feature importances:")
+    idx        = np.argsort(importance)[::-1][:top_n]
+    print(f"\nTop {top_n} features:")
     for rank, i in enumerate(idx, 1):
-        print(f"  {rank:2d}. feature_{i:03d}  importance={importance[i]:.1f}")
+        print(f"  {rank:2d}. feat_{i:03d}  importance={importance[i]:.1f}")
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 
-def main():
+def main() -> None:
     t_start = time.time()
 
-    # 1. Generate training data
+    # 1. Training data
     X_train, y_train = build_training_data()
-    print(f"\nTotal training windows: {len(X_train):,}  "
+    print(f"\n  Total: {len(X_train):,} windows  "
           f"(move={int((y_train==1).sum()):,}  "
           f"sleep={int((y_train==2).sum()):,}  "
           f"scratch={int((y_train==3).sum()):,})")
@@ -276,20 +354,18 @@ def main():
     model = train_model(X_train, y_train)
 
     # 3. Save model
-    weights_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "weights")
-    os.makedirs(weights_dir, exist_ok=True)
-    model_path = os.path.join(weights_dir, "behavior_lgbm.pkl")
-    with open(model_path, "wb") as f:
+    with open(MODEL_PATH, "wb") as f:
         pickle.dump(model, f)
-    print(f"\nModel saved → {model_path}")
+    print(f"  Model saved → {MODEL_PATH}")
 
-    # 4. Evaluate on all 5 scenarios
+    # 4. Evaluate
     print(f"\n{'='*60}")
-    print("Per-scenario evaluation (30-day held-out per scenario)")
+    print("Step 3 — Per-scenario evaluation (30-day held-out)")
     print(f"{'='*60}")
     accs = {}
-    for sc in tqdm(TEST_SCENARIOS, desc="Evaluating", unit="scenario", ncols=70):
-        tqdm.write(f"\n── {sc} {'(UNSEEN)' if sc not in TRAIN_SCENARIOS else '(seen)'} ──")
+    for sc in tqdm(TEST_SCENARIOS, desc="Evaluating", unit="sc", ncols=72):
+        tag = "(UNSEEN)" if sc not in TRAIN_SCENARIOS else "(seen)  "
+        tqdm.write(f"\n── {sc} {tag} ──")
         accs[sc] = evaluate_model(model, sc)
 
     # 5. Feature importance
@@ -302,7 +378,9 @@ def main():
     for sc, acc in accs.items():
         tag = "(UNSEEN)" if sc not in TRAIN_SCENARIOS else "(seen)  "
         print(f"  {tag} {sc:25s} accuracy={acc:.4f}")
-    print(f"\nTotal time: {time.time()-t_start:.1f}s")
+    print(f"\n  Data dir : {DATA_DIR}")
+    print(f"  Model    : {MODEL_PATH}")
+    print(f"  Total time: {time.time()-t_start:.1f}s")
 
 
 if __name__ == "__main__":
