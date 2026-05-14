@@ -18,17 +18,24 @@ class Settings(BaseSettings):
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
 
-    # Redis
-    redis_url: str = "redis://redis:6379/0"
-
     # Logging
     log_level: str = "info"
 
-    # Inference
-    model_weights_path: str = "weights/behavior_model.pt"
-    inference_device: str = "cpu"  # "cuda" if GPU available
+    # LightGBM model
+    model_path: str = "weights/behavior_lgbm.pkl"
 
-    # Scheduler
+    # IMU sampling rate (Hz) — used to convert seconds → samples
+    imu_sample_rate: int = 50
+
+    # Classification sliding window (seconds); keep small regardless of fetch interval
+    window_seconds: int = 3
+    # Overlap ratio between consecutive windows (0.0 ~ 1.0)
+    window_overlap: float = 0.5
+
+    # Scheduler: how often to fetch & infer (minutes); change without redeploying
+    fetch_interval_min: int = 15
+
+    # Scheduler: baseline & assessment cron
     baseline_update_cron: str = "0 2 * * *"   # 02:00 daily
     assessment_cron: str = "0 3 * * *"         # 03:00 daily
 

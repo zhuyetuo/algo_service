@@ -15,15 +15,16 @@ services:
       - DB_NAME=${DB_NAME:-algo}
       - DB_USER=${DB_USER:-algo}
       - DB_PASSWORD=${DB_PASSWORD:-algo}
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      - IMU_SAMPLE_RATE=${IMU_SAMPLE_RATE:-50}
+      - WINDOW_SECONDS=${WINDOW_SECONDS:-3}
+      - WINDOW_OVERLAP=${WINDOW_OVERLAP:-0.5}
+      - FETCH_INTERVAL_MIN=${FETCH_INTERVAL_MIN:-15}
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     volumes:
-      - model_weights:/app/weights   # mount pre-downloaded model files
+      - model_weights:/app/weights
     networks:
       - algo_net
 
@@ -39,18 +40,6 @@ services:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-algo} -d ${DB_NAME:-algo}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - algo_net
-
-  redis:
-    image: redis:7-alpine
-    container_name: algo_redis
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5

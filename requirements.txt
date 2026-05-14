@@ -6,14 +6,11 @@ pydantic-settings==2.2.1
 asyncpg==0.29.0
 sqlalchemy[asyncio]==2.0.30
 
-# Cache / broker
-redis==5.0.4
-
 # Scheduler
 apscheduler==3.10.4
 
-# ML / CV (adjust versions to match your model)
-torch==2.3.0
-torchvision==0.18.0
-opencv-python-headless==4.9.0.80
+# ML
+lightgbm==4.3.0
+scikit-learn==1.4.2
 numpy==1.26.4
+scipy==1.13.0
