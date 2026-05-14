@@ -117,28 +117,51 @@ _GENERATORS = {
     BehaviorLabel.SCRATCH:  _scratch_window,
 }
 
+# Pool size per class: large enough for variety, small enough to build quickly
+_POOL_SIZE = 2000
+
+# Lazy-built cache: {BehaviorLabel -> (N, n_features) float32 array}
+_FEATURE_POOL: dict | None = None
+
+
+def _build_feature_pool() -> dict:
+    pool = {}
+    for label, gen_fn in tqdm(_GENERATORS.items(), desc="Building feature pool",
+                               unit="class", ncols=70):
+        windows = [gen_fn() for _ in range(_POOL_SIZE)]
+        pool[label] = np.array(
+            [extract_features(w, FS) for w in windows], dtype=np.float32
+        )
+    return pool
+
+
+def _get_pool() -> dict:
+    global _FEATURE_POOL
+    if _FEATURE_POOL is None:
+        _FEATURE_POOL = _build_feature_pool()
+    return _FEATURE_POOL
+
 
 # ── Data generation ──────────────────────────────────────────────────────────
 
 def generate_scenario_features(scenario_name: str, n_days: int) -> tuple[np.ndarray, np.ndarray]:
     """
     Returns (X, y) where X is (N, n_features) and y is (N,) integer labels.
-    Simulates n_days of daily behavior data for the given scenario.
+    Samples from a pre-built feature pool instead of re-generating raw IMU
+    signals each time — ~100x faster for large day counts.
     """
     daily = DAILY_WINDOWS[scenario_name]
+    pool  = _get_pool()
     X_parts, y_parts = [], []
 
-    for day in tqdm(range(n_days), desc=f"  {scenario_name}", unit="day", ncols=70, leave=False):
+    for _ in tqdm(range(n_days), desc=f"  {scenario_name}", unit="day", ncols=70, leave=False):
         for label, n_windows_per_day in daily.items():
-            # Add daily variation (±20 %)
-            n = max(1, int(n_windows_per_day * RNG.uniform(0.8, 1.2)))
-            for _ in range(n):
-                window = _GENERATORS[label]()
-                feat   = extract_features(window, FS)
-                X_parts.append(feat)
-                y_parts.append(int(label))
+            n   = max(1, int(n_windows_per_day * RNG.uniform(0.8, 1.2)))
+            idx = RNG.integers(0, _POOL_SIZE, size=n)
+            X_parts.append(pool[label][idx])
+            y_parts.append(np.full(n, int(label), dtype=np.int32))
 
-    return np.array(X_parts, dtype=np.float32), np.array(y_parts, dtype=np.int32)
+    return np.vstack(X_parts), np.concatenate(y_parts)
 
 
 # ── Training ─────────────────────────────────────────────────────────────────
