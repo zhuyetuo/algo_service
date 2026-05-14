@@ -36,6 +36,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from dataclasses import dataclass, field
+from tqdm import tqdm
 
 RNG   = np.random.default_rng(42)
 N_DAYS = 180
@@ -116,7 +117,7 @@ def run_assessment(
     temp_buf  = []
     count_buf = []
 
-    for day in range(N_DAYS):
+    for day in tqdm(range(N_DAYS), desc="  Simulating", unit="day", ncols=70, leave=False):
         count   = int(counts[day])
         temp    = float(temperatures[day])
         quality = int(data_quality[day])
@@ -393,8 +394,11 @@ def main():
 
     summary = []
 
-    for i, sc_fn in enumerate(SCENARIOS):
+    sc_bar = tqdm(enumerate(SCENARIOS), total=len(SCENARIOS),
+                  desc="Scenarios", unit="scenario", ncols=70)
+    for i, sc_fn in sc_bar:
         counts, temps, quality, title = sc_fn()
+        sc_bar.set_postfix_str(title.split()[0])
         records = run_assessment(counts, temps, quality)
         n_alerts, n_abn = report(records, title)
         summary.append((title, n_alerts, n_abn))
