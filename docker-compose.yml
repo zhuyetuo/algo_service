@@ -1,0 +1,66 @@
+version: "3.9"
+
+services:
+  algo_service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: algo_service
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=${DB_NAME:-algo}
+      - DB_USER=${DB_USER:-algo}
+      - DB_PASSWORD=${DB_PASSWORD:-algo}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - model_weights:/app/weights   # mount pre-downloaded model files
+    networks:
+      - algo_net
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: algo_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-algo}
+      POSTGRES_USER: ${DB_USER:-algo}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-algo}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-algo} -d ${DB_NAME:-algo}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - algo_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: algo_redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - algo_net
+
+volumes:
+  pg_data:
+  model_weights:
+
+networks:
+  algo_net:
+    driver: bridge
