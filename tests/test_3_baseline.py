@@ -31,6 +31,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 RNG = np.random.default_rng(42)
 
@@ -73,7 +74,7 @@ def update_baseline(
 
     temp_buf, count_buf = [], []
 
-    for day in range(n):
+    for day in tqdm(range(n), desc="  Days", unit="day", ncols=70, leave=False):
         count = float(daily_counts[day])
         temp  = float(daily_temps[day])
         valid_days += 1
@@ -328,18 +329,17 @@ def main():
     print("Test 3 — Individual Baseline Update")
     print("=" * 60)
 
+    sub_tests = [
+        ("T1 Normal convergence",  test_T1_normal_convergence),
+        ("T2 Abnormal permeation", test_T2_abnormal_permeation),
+        ("T3 Temp coefficient",    test_T3_temp_coefficient),
+        ("T4 Phase transitions",   test_T4_phase_transitions),
+    ]
     results = []
-    h1, tv1, ok1 = test_T1_normal_convergence()
-    results.append((h1, tv1, ok1, "T1 Normal convergence"))
-
-    h2, tv2, ok2 = test_T2_abnormal_permeation()
-    results.append((h2, tv2, ok2, "T2 Abnormal permeation"))
-
-    h3, tv3, ok3 = test_T3_temp_coefficient()
-    results.append((h3, tv3, ok3, "T3 Temp coefficient"))
-
-    h4, tv4, ok4 = test_T4_phase_transitions()
-    results.append((h4, tv4, ok4, "T4 Phase transitions"))
+    for label, fn in tqdm(sub_tests, desc="Sub-tests", unit="test", ncols=70):
+        tqdm.write(f"\nRunning {label}...")
+        h, tv, ok = fn()
+        results.append((h, tv, ok, label))
 
     plot_all(results)
 

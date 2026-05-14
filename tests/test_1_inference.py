@@ -32,6 +32,7 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
 import lightgbm as lgb
+from tqdm import tqdm
 
 from modules.inference.model import extract_features, segment, BehaviorLabel
 
@@ -127,7 +128,7 @@ def generate_scenario_features(scenario_name: str, n_days: int) -> tuple[np.ndar
     daily = DAILY_WINDOWS[scenario_name]
     X_parts, y_parts = [], []
 
-    for day in range(n_days):
+    for day in tqdm(range(n_days), desc=f"  {scenario_name}", unit="day", ncols=70, leave=False):
         for label, n_windows_per_day in daily.items():
             # Add daily variation (±20 %)
             n = max(1, int(n_windows_per_day * RNG.uniform(0.8, 1.2)))
@@ -147,10 +148,10 @@ def build_training_data():
     print("Generating training data (scenarios: S1 / S2 / S3 × 180 days)")
     print(f"{'='*60}")
     X_list, y_list = [], []
-    for sc in TRAIN_SCENARIOS:
+    for sc in tqdm(TRAIN_SCENARIOS, desc="Scenarios", unit="scenario", ncols=70):
         t0 = time.time()
         X, y = generate_scenario_features(sc, N_DAYS)
-        print(f"  {sc:20s} → {len(X):>7,} windows  ({time.time()-t0:.1f}s)")
+        tqdm.write(f"  {sc:20s} → {len(X):>7,} windows  ({time.time()-t0:.1f}s)")
         X_list.append(X)
         y_list.append(y)
     return np.vstack(X_list), np.concatenate(y_list)
@@ -199,7 +200,6 @@ def evaluate_model(model, scenario_name: str):
     y_pred = model.predict(X)
 
     acc = accuracy_score(y, y_pred)
-    print(f"\n── {scenario_name} {'(UNSEEN)' if scenario_name not in TRAIN_SCENARIOS else '(seen)'} ──")
     print(f"   Samples  : {len(y):,}  (30-day held-out)")
     print(f"   Accuracy : {acc:.4f}")
 
@@ -265,7 +265,8 @@ def main():
     print("Per-scenario evaluation (30-day held-out per scenario)")
     print(f"{'='*60}")
     accs = {}
-    for sc in TEST_SCENARIOS:
+    for sc in tqdm(TEST_SCENARIOS, desc="Evaluating", unit="scenario", ncols=70):
+        tqdm.write(f"\n── {sc} {'(UNSEEN)' if sc not in TRAIN_SCENARIOS else '(seen)'} ──")
         accs[sc] = evaluate_model(model, sc)
 
     # 5. Feature importance
