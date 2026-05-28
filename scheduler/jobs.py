@@ -4,9 +4,9 @@
 三个任务：
   inference_cycle  — 每隔 FETCH_INTERVAL_MIN 分钟执行
                      拉取未处理的 IMU 数据 → 行为事件 → pet_behavior_record
-  batch_assessment — 每天 03:00 UTC 执行
+  batch_assessment — 每天执行
                      汇总抓挠统计 → z-score → pet_skin_health_daily
-  baseline_update  — 每天 02:00 UTC 执行
+  baseline_update  — 每天执行
                      重新计算个体基线 → pet_skin_baseline
 """
 

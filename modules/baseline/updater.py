@@ -1,11 +1,14 @@
 """
-Individual scratch baseline updater.
+个体抓挠基线更新模块。
 
-Update strategy (matches demo design):
-- Normal days  → weight = NORMAL_W  (0.05)
-- Abnormal days → weight = ABNORMAL_W (0.01)  ← slow permeation, not full exclusion
-- Runs every 7 days via scheduler
-- Uses past 30 normal days to recompute std and temp_coef
+更新策略（与 demo 设计一致）：
+- 软冻结权重基于 Z-score 三档：
+    Z < 1  → weight = 0.10（正常偏差，正常学习）
+    1 ≤ Z < 2 → weight = 0.03（轻度异常，缓慢渗透）
+    Z ≥ 2  → weight = 0.00（明显异常，完全冻结）
+- 每天执行（由调度器 cron 驱动）
+- 使用过去30天的有效天数重新计算标准差和温度系数
+- 同步更新 wpeb_mean 和 wpeb_std 的 EWMA
 """
 
 import logging
@@ -22,9 +25,9 @@ logger = logging.getLogger(__name__)
 
 async def _update_one(device_sn: str) -> None:
     async with AsyncSessionLocal() as db:
-        # ── Fetch past 30 valid days ─────────────────────────────────────────
+        # 拉取过去30天有效天的数据（data_quality=0）
         rows_sql = text("""
-            SELECT scratch_count, avg_temperature, is_abnormal
+            SELECT scratch_count, avg_temperature, zscore, wpeb_score
             FROM   pet_skin_health_daily
             WHERE  device_sn   = :sn
               AND  data_quality = 0
@@ -36,56 +39,94 @@ async def _update_one(device_sn: str) -> None:
         if not rows:
             return
 
-        # ── Current baseline ─────────────────────────────────────────────────
+        # 读取当前基线
         bl_sql = text("""
-            SELECT baseline_mean, baseline_std, temp_coef, valid_days
+            SELECT baseline_mean, baseline_std, temp_coef, valid_days,
+                   wpeb_mean, wpeb_std
             FROM   pet_skin_baseline
             WHERE  device_sn = :sn
         """)
-        bl = (await db.execute(bl_sql, {"sn": device_sn})).fetchone()
+        try:
+            bl = (await db.execute(bl_sql, {"sn": device_sn})).fetchone()
+        except Exception:
+            bl = None
 
         if bl:
-            cur_mean     = float(bl.baseline_mean)
-            cur_std      = float(bl.baseline_std)
-            cur_coef     = float(bl.temp_coef)
-            valid_days   = int(bl.valid_days)
+            cur_mean   = float(bl.baseline_mean)
+            cur_std    = float(bl.baseline_std)
+            cur_coef   = float(bl.temp_coef)
+            valid_days = int(bl.valid_days)
+            try:
+                cur_wpeb_mean = float(bl.wpeb_mean) if bl.wpeb_mean is not None else float(rows[0].wpeb_score or 0)
+                cur_wpeb_std  = float(bl.wpeb_std) if bl.wpeb_std is not None else settings.baseline_std_floor_wpeb
+            except Exception:
+                # wpeb_mean/wpeb_std 字段可能尚未存在
+                cur_wpeb_mean = float(rows[0].wpeb_score or 0) if rows else 0.0
+                cur_wpeb_std  = settings.baseline_std_floor_wpeb
         else:
-            # Bootstrap: use today's scratch count as seed
-            cur_mean     = float(rows[0].scratch_count)
-            cur_std      = settings.baseline_std_floor
-            cur_coef     = 0.0
-            valid_days   = 0
+            # 首次初始化：以最新一天数据作为种子
+            cur_mean      = float(rows[0].scratch_count)
+            cur_std       = settings.baseline_std_floor
+            cur_coef      = 0.0
+            valid_days    = 0
+            cur_wpeb_mean = float(rows[0].wpeb_score or 0) if rows else 0.0
+            cur_wpeb_std  = settings.baseline_std_floor_wpeb
 
-        # ── Rolling exponential update ───────────────────────────────────────
-        # Process oldest → newest (rows are DESC, so reverse)
+        # 滚动指数加权更新（从最旧到最新，rows 为 DESC 故先 reverse）
         for row in reversed(rows):
-            count    = float(row.scratch_count)
-            is_abn   = bool(row.is_abnormal)
-            weight   = settings.abnormal_day_weight if is_abn else settings.normal_day_weight
-            cur_mean = cur_mean * (1 - weight) + count * weight
-            valid_days += 0 if is_abn else 1
+            count  = float(row.scratch_count)
+            zscore = float(row.zscore) if row.zscore is not None else 0.0
 
-        # ── Recompute std from normal days (last 30) ─────────────────────────
+            # Z-score 三档软冻结权重
+            if zscore < 1.0:
+                weight = 0.10    # 正常范围，正常学习速率
+            elif zscore < 2.0:
+                weight = 0.03    # 轻度异常，缓慢渗透
+            else:
+                weight = 0.00    # 明显异常，完全冻结基线
+
+            # 仅在 weight > 0 时更新均值
+            if weight > 0:
+                cur_mean = cur_mean * (1 - weight) + count * weight
+                valid_days += 1
+
+            # wpeb_score EWMA 更新（同样采用 Z-score 三档权重）
+            wpeb = float(row.wpeb_score) if row.wpeb_score is not None else 0.0
+            if weight > 0:
+                cur_wpeb_mean = cur_wpeb_mean * (1 - weight) + wpeb * weight
+
+        # 用过去30天正常天（Z<1）重新计算标准差
         normal_counts = [
-            float(r.scratch_count) for r in rows if not r.is_abnormal
+            float(r.scratch_count)
+            for r in rows
+            if r.zscore is None or float(r.zscore) < 1.0
         ]
         if len(normal_counts) >= 3:
             cur_std = max(float(np.std(normal_counts)), settings.baseline_std_floor)
 
-        # ── Temperature coefficient via least squares ────────────────────────
+        # 用过去30天正常天的 wpeb_score 重新计算 wpeb_std
+        normal_wpeb = [
+            float(r.wpeb_score)
+            for r in rows
+            if r.wpeb_score is not None and (r.zscore is None or float(r.zscore) < 1.0)
+        ]
+        if len(normal_wpeb) >= 3:
+            cur_wpeb_std = max(float(np.std(normal_wpeb)), settings.baseline_std_floor_wpeb)
+
+        # 温度系数：最小二乘回归（仅使用正常天，至少需要20个点）
         temp_pairs = [
             (float(r.avg_temperature), float(r.scratch_count))
             for r in rows
-            if r.avg_temperature is not None and not r.is_abnormal
+            if r.avg_temperature is not None and (r.zscore is None or float(r.zscore) < 1.0)
         ]
         if len(temp_pairs) >= 20:
-            temps   = np.array([p[0] for p in temp_pairs])
-            counts  = np.array([p[1] for p in temp_pairs])
-            X       = np.column_stack([temps, np.ones(len(temps))])
+            temps  = np.array([p[0] for p in temp_pairs])
+            counts = np.array([p[1] for p in temp_pairs])
+            X      = np.column_stack([temps, np.ones(len(temps))])
             coefs, _, _, _ = np.linalg.lstsq(X, counts, rcond=None)
             cur_coef = float(np.clip(coefs[0], 0.0, 0.4))
 
-        # ── Confidence 0-1, caps at 30 days ─────────────────────────────────
+        # 基线置信度 0-1，上限30天
         confidence = min(valid_days / 30.0, 1.0)
         phase = (
             0 if valid_days < 3 else
@@ -95,14 +136,17 @@ async def _update_one(device_sn: str) -> None:
 
         now_ms = int(time.time() * 1000)
 
+        # Upsert 写入基线，包含 wpeb_mean 和 wpeb_std
         upsert_sql = text("""
             INSERT INTO pet_skin_baseline
                 (device_sn, baseline_mean, baseline_std, temp_coef,
                  valid_days, eval_phase, confidence,
+                 wpeb_mean, wpeb_std,
                  last_updated_ts, created_at)
             VALUES
                 (:sn, :mean, :std, :coef,
                  :valid_days, :phase, :confidence,
+                 :wpeb_mean, :wpeb_std,
                  :now_ms, :now_ms)
             ON CONFLICT (device_sn) DO UPDATE SET
                 baseline_mean    = EXCLUDED.baseline_mean,
@@ -111,6 +155,8 @@ async def _update_one(device_sn: str) -> None:
                 valid_days       = EXCLUDED.valid_days,
                 eval_phase       = EXCLUDED.eval_phase,
                 confidence       = EXCLUDED.confidence,
+                wpeb_mean        = EXCLUDED.wpeb_mean,
+                wpeb_std         = EXCLUDED.wpeb_std,
                 last_updated_ts  = EXCLUDED.last_updated_ts
         """)
         await db.execute(upsert_sql, {
@@ -121,18 +167,22 @@ async def _update_one(device_sn: str) -> None:
             "valid_days": min(valid_days, 30),
             "phase":      phase,
             "confidence": round(confidence, 2),
+            "wpeb_mean":  round(cur_wpeb_mean, 4),
+            "wpeb_std":   round(cur_wpeb_std, 4),
             "now_ms":     now_ms,
         })
         await db.commit()
 
         logger.info(
-            "Baseline updated device=%s mean=%.2f std=%.2f coef=%.3f valid_days=%d",
-            device_sn, cur_mean, cur_std, cur_coef, valid_days,
+            "基线更新完成 device=%s mean=%.2f std=%.2f coef=%.3f "
+            "wpeb_mean=%.4f wpeb_std=%.4f valid_days=%d",
+            device_sn, cur_mean, cur_std, cur_coef,
+            cur_wpeb_mean, cur_wpeb_std, valid_days,
         )
 
 
 async def run_baseline_update() -> None:
-    """Update baselines for all devices that have daily assessment data."""
+    """对所有有每日评估数据的设备更新基线。"""
     async with AsyncSessionLocal() as db:
         devices_sql = text(
             "SELECT DISTINCT device_sn FROM pet_skin_health_daily"
@@ -143,4 +193,4 @@ async def run_baseline_update() -> None:
         try:
             await _update_one(row.device_sn)
         except Exception:
-            logger.exception("Baseline update failed for device=%s", row.device_sn)
+            logger.exception("基线更新失败 device=%s", row.device_sn)
