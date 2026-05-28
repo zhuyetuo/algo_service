@@ -68,5 +68,15 @@ class Settings(BaseSettings):
     # 最小佩戴分钟数，低于此值视为当天无效
     min_wear_minutes: int = 480  # 8小时
 
+    # TDengine 连接配置
+    td_host: str = "localhost"
+    td_port: int = 6030
+    td_user: str = "root"
+    td_password: str = "taosdata"
+    td_database: str = "hiccpet_device"
+    td_supertable: str = "imu_data"
+    # 每次从 TDengine 单设备拉取的最大行数
+    td_batch_size: int = 50000
+
 
 settings = Settings()

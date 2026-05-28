@@ -9,6 +9,8 @@
 - 每天执行（由调度器 cron 驱动）
 - 使用过去30天的有效天数重新计算标准差和温度系数
 - 同步更新 wpeb_mean 和 wpeb_std 的 EWMA
+- 数据来源：skin_assessment.{device_sn}（每设备独立表）
+- 设备列表来源：device_sync_state（统一表）
 """
 
 import logging
@@ -25,21 +27,20 @@ logger = logging.getLogger(__name__)
 
 async def _update_one(device_sn: str) -> None:
     async with AsyncSessionLocal() as db:
-        # 拉取过去30天有效天的数据（data_quality=0）
-        rows_sql = text("""
+        # 从 skin_assessment.{device_sn} 拉取过去30天有效天的数据（data_quality=0）
+        rows_sql = text(f"""
             SELECT scratch_count, avg_temperature, zscore, wpeb_score
-            FROM   pet_skin_health_daily
-            WHERE  device_sn   = :sn
-              AND  data_quality = 0
+            FROM   skin_assessment.{device_sn}
+            WHERE  data_quality = 0
             ORDER BY stat_date_ts DESC
             LIMIT 30
         """)
-        rows = (await db.execute(rows_sql, {"sn": device_sn})).fetchall()
+        rows = (await db.execute(rows_sql)).fetchall()
 
         if not rows:
             return
 
-        # 读取当前基线
+        # 读取当前基线（pet_skin_baseline 仍为按 device_sn 主键的统一表）
         bl_sql = text("""
             SELECT baseline_mean, baseline_std, temp_coef, valid_days,
                    wpeb_mean, wpeb_std
@@ -182,10 +183,11 @@ async def _update_one(device_sn: str) -> None:
 
 
 async def run_baseline_update() -> None:
-    """对所有有每日评估数据的设备更新基线。"""
+    """对所有注册设备更新基线（设备列表从 device_sync_state 统一表获取）。"""
     async with AsyncSessionLocal() as db:
+        # 从 device_sync_state 获取所有设备，替代原来查询 pet_skin_health_daily
         devices_sql = text(
-            "SELECT DISTINCT device_sn FROM pet_skin_health_daily"
+            "SELECT device_sn FROM device_sync_state"
         )
         devices = (await db.execute(devices_sql)).fetchall()
 

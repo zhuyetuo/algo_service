@@ -2,13 +2,13 @@
 每日皮肤健康评估模块。
 
 逻辑流程（与 demo_all.py 设计一致）：
-1. 从 pet_behavior_record 汇总当日抓挠事件
+1. 从 behavior.{device_sn} 汇总当日抓挠事件
 2. 从 pet_skin_baseline 读取个体基线
 3. 在 Z-score 层面进行温度修正（原始计数不做修改）
 4. 根据 eval_phase 应用动态阈值
 5. 跟踪连续异常天数
 6. 计算 S1-S6 各维度分数及综合健康等级
-7. 将结果写入 pet_skin_health_daily
+7. 将结果写入 skin_assessment.{device_sn} 表
 """
 
 import logging
@@ -188,28 +188,27 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
     计算并写入单台设备的每日皮肤健康记录。
 
     stat_date_ts：该设备当地日期零点的 UTC 毫秒时间戳，由调用方传入（后端负责时区转换）。
+    数据读取来源：behavior.{device_sn}、skin_assessment.{device_sn}、environment.{device_sn}。
     """
     day_end_ts = stat_date_ts + 86_400_000  # 当天结束毫秒时间戳（+24小时）
 
-    # ── 1. 汇总当日抓挠事件 ───────────────────────────────────────────────────
-    scratch_sql = text("""
-        SELECT start_time, end_time, confidence
-        FROM   pet_behavior_record
-        WHERE  device_sn      = :sn
-          AND  behavior_type  = :btype
-          AND  start_time    >= :day_start
-          AND  start_time     < :day_end
-        ORDER BY start_time
+    # ── 1. 汇总当日抓挠事件（从 behavior.{device_sn} 读取） ──────────────────
+    # SCRATCH 行为枚举值为 3，直接用整数过滤，无需 device_sn 参数
+    scratch_sql = text(f"""
+        SELECT ts_start, ts_end, confidence
+        FROM   behavior.{device_sn}
+        WHERE  behavior   = {int(BehaviorLabel.SCRATCH)}
+          AND  ts_start  >= :day_start
+          AND  ts_start   < :day_end
+        ORDER BY ts_start
     """)
     rows = (await db.execute(scratch_sql, {
-        "sn": device_sn,
-        "btype": int(BehaviorLabel.SCRATCH),
         "day_start": stat_date_ts,
         "day_end":   day_end_ts,
     })).fetchall()
 
     scratch_count = len(rows)
-    durations_ms  = [r.end_time - r.start_time for r in rows]
+    durations_ms  = [r.ts_end - r.ts_start for r in rows]
     scratch_dur   = sum(durations_ms)
     scratch_avg_dur = int(scratch_dur / scratch_count) if scratch_count else 0
     scratch_max_dur = max(durations_ms, default=0)
@@ -219,14 +218,14 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
     night_end_ts   = stat_date_ts + 6 * 3_600_000
     night_count = sum(
         1 for r in rows
-        if night_start_ts <= r.start_time < night_end_ts
+        if night_start_ts <= r.ts_start < night_end_ts
     )
 
     # ── 2. 计算每个抓挠事件的 W-PEB（加权强度×时长积分） ─────────────────────
     wpeb_score = 0.0
     for r in rows:
         conf = float(r.confidence) if r.confidence is not None else 0.5
-        dur_s = (r.end_time - r.start_time) / 1000.0  # 转换为秒
+        dur_s = (r.ts_end - r.ts_start) / 1000.0  # 转换为秒
 
         # 置信度代理强度分级
         if conf < 0.65:
@@ -253,6 +252,7 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
     worn_loose_minutes = 0.0
 
     try:
+        # device_wear_state 为统一表，保留 device_sn 过滤
         wear_state_sql = text("""
             SELECT start_time, end_time, wear_state
             FROM   device_wear_state
@@ -273,17 +273,16 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
 
         wear_minutes = int(worn_normal_ms / 60_000)
     except Exception:
-        # device_wear_state 表不存在时，fallback：用行为记录时长加总估算佩戴时长
+        # device_wear_state 表不存在时，fallback：从行为表用 ts_start/ts_end 估算佩戴时长
         logger.debug("device_wear_state 表不可访问，使用行为记录时长 fallback")
-        wear_sql = text("""
-            SELECT COALESCE(SUM(end_time - start_time), 0) AS wore_ms
-            FROM   pet_behavior_record
-            WHERE  device_sn   = :sn
-              AND  start_time >= :day_start
-              AND  start_time  < :day_end
+        wear_sql = text(f"""
+            SELECT COALESCE(SUM(ts_end - ts_start), 0) AS wore_ms
+            FROM   behavior.{device_sn}
+            WHERE  ts_start >= :day_start
+              AND  ts_start  < :day_end
         """)
         wore_ms = (await db.execute(wear_sql, {
-            "sn": device_sn, "day_start": stat_date_ts, "day_end": day_end_ts,
+            "day_start": stat_date_ts, "day_end": day_end_ts,
         })).scalar() or 0
         wear_minutes = int(wore_ms / 60_000)
         worn_loose_minutes = 0.0
@@ -293,7 +292,7 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
     if wear_minutes < settings.min_wear_minutes:
         data_quality = 1  # 无效天，数据不足
 
-    # ── 4. 读取基线 ───────────────────────────────────────────────────────────
+    # ── 4. 读取基线（pet_skin_baseline 仍为统一表，按 device_sn 主键） ────────
     bl_sql = text("""
         SELECT baseline_mean, baseline_std, temp_coef, valid_days,
                wpeb_mean, wpeb_std
@@ -330,15 +329,56 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
     phase  = eval_phase(valid_days)
     thresh = get_threshold(valid_days)
 
-    # ── 5. 读取日均体温 ───────────────────────────────────────────────────────
-    avg_temp_sql = text("""
-        SELECT avg_temperature FROM pet_skin_health_daily
-        WHERE device_sn = :sn AND stat_date_ts = :ts
+    # ── 5. 读取日均体温（从 skin_assessment.{device_sn} 读取已有记录） ────────
+    # 确保皮肤评估表已存在
+    await db.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS skin_assessment.{device_sn} (
+            stat_date_ts       bigint PRIMARY KEY,
+            scratch_count      int            NOT NULL DEFAULT 0,
+            scratch_duration   bigint         NOT NULL DEFAULT 0,
+            scratch_avg_dur    int            NOT NULL DEFAULT 0,
+            scratch_max_dur    int            NOT NULL DEFAULT 0,
+            night_scratch_count int           NOT NULL DEFAULT 0,
+            wpeb_score         decimal(10,4)  NOT NULL DEFAULT 0,
+            avg_temperature    decimal(5,2),
+            avg_humidity       decimal(5,1),
+            baseline_mean      decimal(6,2),
+            baseline_std       decimal(6,2),
+            temp_coef          decimal(5,3),
+            temp_effect        decimal(6,2),
+            zscore             decimal(6,2),
+            avg_zscore         decimal(6,2),
+            consec_abnormal    int            NOT NULL DEFAULT 0,
+            eval_phase         smallint       NOT NULL DEFAULT 0,
+            threshold_z        decimal(4,2),
+            threshold_consec   smallint,
+            threshold_avgz     decimal(4,2),
+            valid_days         int            NOT NULL DEFAULT 0,
+            is_abnormal        smallint       NOT NULL DEFAULT 0,
+            alert_level        smallint       NOT NULL DEFAULT 0,
+            alert_reason       varchar(256),
+            s1_score           decimal(5,1)   NOT NULL DEFAULT 0,
+            s2_score           decimal(5,1)   NOT NULL DEFAULT 0,
+            s3_score           decimal(5,1)   NOT NULL DEFAULT 0,
+            s4_score           decimal(5,1)   NOT NULL DEFAULT 0,
+            s5_score           decimal(5,1)   NOT NULL DEFAULT 0,
+            s6_score           decimal(5,1)   NOT NULL DEFAULT 0,
+            total_score        decimal(6,1)   NOT NULL DEFAULT 0,
+            health_level       smallint       NOT NULL DEFAULT 0,
+            data_quality       smallint       NOT NULL DEFAULT 0,
+            wear_minutes       int            NOT NULL DEFAULT 0,
+            worn_loose_minutes decimal(8,1)   NOT NULL DEFAULT 0,
+            created_at         bigint         NOT NULL,
+            updated_at         bigint         NOT NULL
+        )
+    """))
+
+    avg_temp_sql = text(f"""
+        SELECT avg_temperature FROM skin_assessment.{device_sn}
+        WHERE stat_date_ts = :ts
     """)
     try:
-        existing = (await db.execute(avg_temp_sql, {
-            "sn": device_sn, "ts": stat_date_ts,
-        })).fetchone()
+        existing = (await db.execute(avg_temp_sql, {"ts": stat_date_ts})).fetchone()
         avg_temperature = float(existing.avg_temperature) if existing and existing.avg_temperature else None
     except Exception:
         avg_temperature = None
@@ -357,17 +397,14 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
 
     if data_quality == 1:
         # 数据不足：读取上一天的 consec_abnormal 原样保留（跳过本天）
-        prev_consec_sql = text("""
-            SELECT consec_abnormal FROM pet_skin_health_daily
-            WHERE  device_sn    = :sn
-              AND  stat_date_ts  < :ts
+        prev_consec_sql = text(f"""
+            SELECT consec_abnormal FROM skin_assessment.{device_sn}
+            WHERE  stat_date_ts < :ts
             ORDER BY stat_date_ts DESC
             LIMIT 1
         """)
         try:
-            prev_consec_row = (await db.execute(prev_consec_sql, {
-                "sn": device_sn, "ts": stat_date_ts,
-            })).fetchone()
+            prev_consec_row = (await db.execute(prev_consec_sql, {"ts": stat_date_ts})).fetchone()
             consec_abnormal = int(prev_consec_row.consec_abnormal) if prev_consec_row else 0
         except Exception:
             consec_abnormal = 0
@@ -379,17 +416,16 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
         zscore = round(adjusted_dev / bl_std, 3)
 
         # 读取近 N 天 z-score 计算滑动均值
-        recent_sql = text("""
-            SELECT zscore FROM pet_skin_health_daily
-            WHERE  device_sn    = :sn
-              AND  stat_date_ts  < :ts
+        recent_sql = text(f"""
+            SELECT zscore FROM skin_assessment.{device_sn}
+            WHERE  stat_date_ts < :ts
               AND  data_quality  = 0
               AND  zscore IS NOT NULL
             ORDER BY stat_date_ts DESC
             LIMIT  :n
         """)
         recent_rows = (await db.execute(recent_sql, {
-            "sn": device_sn, "ts": stat_date_ts,
+            "ts": stat_date_ts,
             "n": thresh.consec - 1,
         })).fetchall()
 
@@ -399,17 +435,14 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
         is_abnormal = zscore > thresh.z
 
         # 读取上一个有效天的连续计数
-        prev_sql = text("""
-            SELECT consec_abnormal FROM pet_skin_health_daily
-            WHERE  device_sn    = :sn
-              AND  stat_date_ts  < :ts
+        prev_sql = text(f"""
+            SELECT consec_abnormal FROM skin_assessment.{device_sn}
+            WHERE  stat_date_ts < :ts
               AND  data_quality  = 0
             ORDER BY stat_date_ts DESC
             LIMIT 1
         """)
-        prev_row = (await db.execute(prev_sql, {
-            "sn": device_sn, "ts": stat_date_ts,
-        })).fetchone()
+        prev_row = (await db.execute(prev_sql, {"ts": stat_date_ts})).fetchone()
         prev_consec = int(prev_row.consec_abnormal) if prev_row else 0
 
         # 异常则累加，正常则归零
@@ -425,21 +458,18 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
             f"均值z={avg_zscore}"
         )
 
-    # ── 8. 夜间睡眠段数（用于 S3） ────────────────────────────────────────────
-    # 查询夜间时段内睡眠行为段数
+    # ── 8. 夜间睡眠段数（从 behavior.{device_sn} 查询，用于 S3） ────────────
+    # SLEEP 行为枚举值为 2，直接用整数过滤
     night_sleep_segments = 0
     try:
-        sleep_sql = text("""
+        sleep_sql = text(f"""
             SELECT COUNT(*) AS seg_count
-            FROM   pet_behavior_record
-            WHERE  device_sn     = :sn
-              AND  behavior_type = :btype
-              AND  start_time   >= :night_start
-              AND  start_time    < :night_end
+            FROM   behavior.{device_sn}
+            WHERE  behavior   = {int(BehaviorLabel.SLEEP)}
+              AND  ts_start  >= :night_start
+              AND  ts_start   < :night_end
         """)
         seg_row = (await db.execute(sleep_sql, {
-            "sn":          device_sn,
-            "btype":       int(BehaviorLabel.SLEEP),
             "night_start": night_start_ts,
             "night_end":   night_end_ts,
         })).fetchone()
@@ -447,24 +477,21 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
     except Exception:
         night_sleep_segments = 0
 
-    # ── 9. 读取环境数据（用于 S6） ────────────────────────────────────────────
+    # ── 9. 读取环境数据（从 environment.{device_sn} 读取，用于 S6） ──────────
     env_temp = None
     env_humidity = None
     try:
-        env_sql = text("""
+        env_sql = text(f"""
             SELECT env_temp, env_humidity
-            FROM   env_daily_summary
-            WHERE  device_sn    = :sn
-              AND  stat_date_ts = :ts
+            FROM   environment.{device_sn}
+            WHERE  ts = :day_ts
         """)
-        env_row = (await db.execute(env_sql, {
-            "sn": device_sn, "ts": stat_date_ts,
-        })).fetchone()
+        env_row = (await db.execute(env_sql, {"day_ts": stat_date_ts})).fetchone()
         if env_row:
             env_temp     = float(env_row.env_temp) if env_row.env_temp is not None else None
             env_humidity = float(env_row.env_humidity) if env_row.env_humidity is not None else None
     except Exception:
-        # env_daily_summary 表不存在时 S6 为 0
+        # environment.{device_sn} 表不存在时 S6 为 0
         pass
 
     # ── 10. 各维度评分 ────────────────────────────────────────────────────────
@@ -476,13 +503,11 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
     # S5：问卷分数，由外部写入，从已有行读取（默认0）
     s5_score = 0.0
     try:
-        s5_sql = text("""
-            SELECT s5_score FROM pet_skin_health_daily
-            WHERE device_sn = :sn AND stat_date_ts = :ts
+        s5_sql = text(f"""
+            SELECT s5_score FROM skin_assessment.{device_sn}
+            WHERE stat_date_ts = :ts
         """)
-        s5_row = (await db.execute(s5_sql, {
-            "sn": device_sn, "ts": stat_date_ts,
-        })).fetchone()
+        s5_row = (await db.execute(s5_sql, {"ts": stat_date_ts})).fetchone()
         s5_score = float(s5_row.s5_score) if s5_row and s5_row.s5_score is not None else 0.0
     except Exception:
         s5_score = 0.0
@@ -493,11 +518,12 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
     total_score = float(max(0.0, min(100.0, s1_score + s2_score + s3_score + s4_score + s5_score + s6_score)))
     health_level = _score_to_level(total_score)
 
-    # ── 11. Upsert 结果写入 ───────────────────────────────────────────────────
+    # ── 11. Upsert 结果写入 skin_assessment.{device_sn} ─────────────────────
+    # 无 device_sn 列，stat_date_ts 为主键，ON CONFLICT 按主键更新
     now_ms = int(time.time() * 1000)
-    upsert_sql = text("""
-        INSERT INTO pet_skin_health_daily (
-            device_sn, stat_date_ts,
+    upsert_sql = text(f"""
+        INSERT INTO skin_assessment.{device_sn} (
+            stat_date_ts,
             scratch_count, scratch_duration, scratch_avg_dur, scratch_max_dur,
             night_scratch_count,
             avg_temperature,
@@ -513,7 +539,7 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
             total_score, health_level,
             created_at, updated_at
         ) VALUES (
-            :sn, :stat_date_ts,
+            :stat_date_ts,
             :scratch_count, :scratch_dur, :scratch_avg_dur, :scratch_max_dur,
             :night_count,
             :avg_temp,
@@ -529,7 +555,7 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
             :total_score, :health_level,
             :now_ms, :now_ms
         )
-        ON CONFLICT (device_sn, stat_date_ts) DO UPDATE SET
+        ON CONFLICT (stat_date_ts) DO UPDATE SET
             scratch_count        = EXCLUDED.scratch_count,
             scratch_duration     = EXCLUDED.scratch_duration,
             scratch_avg_dur      = EXCLUDED.scratch_avg_dur,
@@ -556,7 +582,6 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
             updated_at           = EXCLUDED.updated_at
     """)
     await db.execute(upsert_sql, {
-        "sn":               device_sn,
         "stat_date_ts":     stat_date_ts,
         "scratch_count":    scratch_count,
         "scratch_dur":      scratch_dur,
@@ -615,7 +640,8 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
 
 async def run_batch_assessment(stat_date_ts: int | None = None) -> None:
     """
-    对所有活跃设备执行每日评估。
+    对所有注册设备执行每日评估。
+    设备列表从 device_sync_state 获取（而非旧的 pet_behavior_record 表）。
 
     stat_date_ts：当地零点的 UTC 毫秒时间戳。
     若为 None，则使用当前 UTC 零点（适用于单时区部署）。
@@ -626,23 +652,17 @@ async def run_batch_assessment(stat_date_ts: int | None = None) -> None:
         stat_date_ts = (now // 86400) * 86400 * 1000
 
     async with AsyncSessionLocal() as db:
-        # 查询今日有行为数据的全部设备
-        devices_sql = text("""
-            SELECT DISTINCT device_sn
-            FROM pet_behavior_record
-            WHERE start_time >= :day_start AND start_time < :day_end
-        """)
-        devices = (await db.execute(devices_sql, {
-            "day_start": stat_date_ts,
-            "day_end":   stat_date_ts + 86_400_000,
-        })).fetchall()
+        # 从 device_sync_state 获取所有设备列表
+        devices = (await db.execute(text(
+            "SELECT device_sn FROM device_sync_state"
+        ))).fetchall()
 
     for row in devices:
         async with AsyncSessionLocal() as db:
             try:
                 await assess_device(db, row.device_sn, stat_date_ts)
             except Exception:
-                logger.exception("设备评估失败 device=%s", row.device_sn)
+                logger.exception("评估失败 device=%s", row.device_sn)
 
 
 # ---------------------------------------------------------------------------
@@ -669,21 +689,22 @@ async def get_report(
     device_sn: str,
     db: AsyncSession = Depends(get_session),
 ):
-    """返回指定设备最新一天的评估报告。"""
-    sql = text("""
-        SELECT d.device_sn, d.stat_date_ts,
+    """返回指定设备最新一天的评估报告（从 skin_assessment.{device_sn} 读取）。"""
+    # 动态构造表名，device_sn 来自内部系统，安全
+    sql = text(f"""
+        SELECT '{device_sn}' AS device_sn,
+               d.stat_date_ts,
                d.scratch_count, d.zscore,
                d.is_abnormal, d.alert_level, d.alert_reason,
                d.eval_phase, d.valid_days,
                b.confidence,
                d.total_score, d.health_level
-        FROM   pet_skin_health_daily d
-        LEFT JOIN pet_skin_baseline b USING (device_sn)
-        WHERE  d.device_sn = :sn
+        FROM   skin_assessment.{device_sn} d
+        LEFT JOIN pet_skin_baseline b ON b.device_sn = '{device_sn}'
         ORDER BY d.stat_date_ts DESC
         LIMIT 1
     """)
-    row = (await db.execute(sql, {"sn": device_sn})).fetchone()
+    row = (await db.execute(sql)).fetchone()
     if row is None:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="暂无评估数据")
