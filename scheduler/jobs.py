@@ -1,13 +1,13 @@
 """
-Scheduler wiring.
+调度器任务配置。
 
-Three jobs:
-  inference_cycle  — every FETCH_INTERVAL_MIN minutes
-                     fetch unprocessed IMU data → behavior events → pet_behavior_record
-  batch_assessment — daily at 03:00 UTC
-                     aggregate scratch stats → z-score → pet_skin_health_daily
-  baseline_update  — every 7 days at 02:00 UTC
-                     recompute individual baselines → pet_skin_baseline
+三个任务：
+  inference_cycle  — 每隔 FETCH_INTERVAL_MIN 分钟执行
+                     拉取未处理的 IMU 数据 → 行为事件 → pet_behavior_record
+  batch_assessment — 每天 03:00 UTC 执行
+                     汇总抓挠统计 → z-score → pet_skin_health_daily
+  baseline_update  — 每天 02:00 UTC 执行
+                     重新计算个体基线 → pet_skin_baseline
 """
 
 import asyncio
@@ -32,14 +32,14 @@ _scheduler = BackgroundScheduler()
 
 
 def _run(coro_fn, *args, **kwargs):
-    """Run an async function from a sync APScheduler thread."""
+    """从同步的 APScheduler 线程中运行异步函数。"""
     def wrapper():
         asyncio.run(coro_fn(*args, **kwargs))
     return wrapper
 
 
 # ---------------------------------------------------------------------------
-# Start / stop
+# 调度器启动与停止
 # ---------------------------------------------------------------------------
 
 def start_scheduler():
@@ -63,7 +63,7 @@ def start_scheduler():
     )
     _scheduler.start()
     logger.info(
-        "Scheduler started — inference every %d min, assessment %s, baseline %s",
+        "调度器已启动 — 推理每 %d 分钟执行，评估 %s，基线更新 %s",
         settings.fetch_interval_min,
         settings.assessment_cron,
         settings.baseline_update_cron,
@@ -72,31 +72,30 @@ def start_scheduler():
 
 def stop_scheduler():
     _scheduler.shutdown(wait=False)
-    logger.info("Scheduler stopped")
+    logger.info("调度器已停止")
 
 
 # ---------------------------------------------------------------------------
-# Inference cycle
+# 推理周期
 # ---------------------------------------------------------------------------
 
 async def run_inference_cycle() -> None:
     """
-    1. Fetch unprocessed IMU rows from algo_input (or equivalent source)
-    2. For each device, run behavior classification
-    3. Persist behavior events to pet_behavior_record
-    4. Mark IMU rows as processed
+    1. 从 algo_input（或等效数据源）拉取未处理的 IMU 行
+    2. 对每个设备运行行为分类
+    3. 将行为事件持久化到 pet_behavior_record
+    4. 将 IMU 行标记为已处理
     """
-    logger.info("Inference cycle started (fetch_interval=%d min)", settings.fetch_interval_min)
+    logger.info("推理周期开始（fetch_interval=%d 分钟）", settings.fetch_interval_min)
 
     try:
         clf = get_classifier()
     except FileNotFoundError:
-        logger.warning("Model file not found — skipping inference cycle")
+        logger.warning("未找到模型文件 — 跳过本次推理周期")
         return
 
     async with AsyncSessionLocal() as db:
-        # Fetch unprocessed IMU data grouped by device
-        # Adjust the table/column names to match your actual input schema
+        # 按设备分组拉取未处理的 IMU 数据，表名和列名需与实际输入 schema 匹配
         fetch_sql = text("""
             SELECT id, device_sn, data_ts, imu_data
             FROM   imu_raw_data
@@ -107,14 +106,14 @@ async def run_inference_cycle() -> None:
         try:
             rows = (await db.execute(fetch_sql)).fetchall()
         except Exception:
-            logger.warning("imu_raw_data table not accessible — using placeholder data")
+            logger.warning("imu_raw_data 表不可访问 — 使用占位数据")
             rows = []
 
     if not rows:
-        logger.debug("No unprocessed IMU data found")
+        logger.debug("未找到未处理的 IMU 数据")
         return
 
-    # Group by device
+    # 按设备分组
     from collections import defaultdict
     device_rows: dict[str, list] = defaultdict(list)
     for row in rows:
@@ -124,7 +123,7 @@ async def run_inference_cycle() -> None:
 
     for device_sn, device_data in device_rows.items():
         try:
-            # Build numpy array — imu_data is JSON: {"ax":…,"ay":…,"az":…,"gx":…,"gy":…,"gz":…}
+            # 构建 numpy 数组，imu_data 为 JSON 格式：{"ax":…,"ay":…,"az":…,"gx":…,"gy":…,"gz":…}
             samples = sorted(device_data, key=lambda r: r.data_ts)
             base_ts_ms = samples[0].data_ts
 
@@ -158,12 +157,12 @@ async def run_inference_cycle() -> None:
                 await db.commit()
 
             processed_ids.extend([r.id for r in samples])
-            logger.info("device=%s events=%d", device_sn, len(events))
+            logger.info("设备=%s 事件数=%d", device_sn, len(events))
 
         except Exception:
-            logger.exception("Inference failed for device=%s", device_sn)
+            logger.exception("设备 %s 推理失败", device_sn)
 
-    # Mark as processed in batch
+    # 批量标记为已处理
     if processed_ids:
         now_ms = int(time.time() * 1000)
         async with AsyncSessionLocal() as db:
@@ -176,4 +175,4 @@ async def run_inference_cycle() -> None:
                 await db.execute(mark_sql, {"now": now_ms, "ids": processed_ids})
                 await db.commit()
             except Exception:
-                logger.warning("Could not mark IMU rows as processed")
+                logger.warning("无法将 IMU 行标记为已处理")

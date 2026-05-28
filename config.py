@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    # Database
+    # 数据库连接配置
     db_host: str = "postgres"
     db_port: int = 5432
     db_name: str = "algo"
@@ -18,31 +18,31 @@ class Settings(BaseSettings):
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
 
-    # Logging
+    # 日志级别
     log_level: str = "info"
 
-    # LightGBM model
+    # LightGBM 模型文件路径
     model_path: str = "weights/behavior_lgbm.pkl"
 
-    # IMU sampling rate (Hz)
+    # IMU 采样率（Hz）
     imu_sample_rate: int = 50
 
-    # Classification sliding window
+    # 分类滑动窗口配置
     window_seconds: int = 3
     window_overlap: float = 0.5
 
-    # Scheduler: fetch & infer interval (minutes) — change via env var, no redeploy needed
+    # 调度器：拉取并推理的时间间隔（分钟），可通过环境变量修改，无需重新部署
     fetch_interval_min: int = 15
 
-    # Scheduler cron expressions
-    baseline_update_cron: str = "0 2 * * *"    # 02:00 daily
-    assessment_cron: str = "0 3 * * *"          # 03:00 daily
+    # 调度器 cron 表达式
+    baseline_update_cron: str = "0 2 * * *"    # 每天 02:00 执行
+    assessment_cron: str = "0 3 * * *"          # 每天 03:00 执行
 
-    # Assessment — dynamic threshold phases
-    # Phase 0: warm-up (days 1-3)   → no assessment
-    # Phase 1: early  (days 4-14)   → z>4.0, consec>=5, avg_z>5.0
-    # Phase 2: mid    (days 15-30)  → z>3.5, consec>=4, avg_z>4.0
-    # Phase 3: stable (days 31+)    → z>2.5, consec>=3, avg_z>3.5
+    # 评估动态阈值分阶段配置
+    # 阶段 0：预热期（第1-3天）  → 不做评估
+    # 阶段 1：早期  （第4-14天） → z>4.0，连续>=5天，均值z>5.0
+    # 阶段 2：中期  （第15-30天）→ z>3.5，连续>=4天，均值z>4.0
+    # 阶段 3：稳定期（第31天起） → z>2.5，连续>=3天，均值z>3.5
     phase1_threshold_z: float = 4.0
     phase1_threshold_consec: int = 5
     phase1_threshold_avgz: float = 5.0
@@ -55,19 +55,18 @@ class Settings(BaseSettings):
     phase3_threshold_consec: int = 3
     phase3_threshold_avgz: float = 3.5
 
-    # Minimum std to avoid division by zero
+    # 基线标准差下限，防止除以零
     baseline_std_floor: float = 2.0
 
-    # Abnormal day baseline update weight (normal days use NORMAL_W)
-    abnormal_day_weight: float = 0.01
-    normal_day_weight: float = 0.05
+    # W-PEB 基线标准差下限
+    baseline_std_floor_wpeb: float = 1.0
 
-    # Night scratch window (hour range in local time, derived from UTC offset provided externally)
+    # 夜间抓挠时间窗口（本地时间小时范围，由外部提供 UTC 偏移量推导）
     night_hour_start: int = 22   # 22:00
     night_hour_end: int = 6      # 06:00
 
-    # Minimum wear minutes to consider a day valid
-    min_wear_minutes: int = 480  # 8 hours
+    # 最小佩戴分钟数，低于此值视为当天无效
+    min_wear_minutes: int = 480  # 8小时
 
 
 settings = Settings()
