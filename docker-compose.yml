@@ -26,34 +26,12 @@ services:
       - TD_PASSWORD=${TD_PASSWORD:-taosdata}
       - TD_DATABASE=${TD_DATABASE:-hiccpet_device}
       - TD_SUPERTABLE=${TD_SUPERTABLE:-imu_data}
-    depends_on:
-      postgres:
-        condition: service_healthy
     volumes:
       - model_weights:/app/weights
     networks:
       - algo_net
 
-  postgres:
-    image: postgres:16-alpine
-    container_name: algo_postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${DB_NAME:-algo}
-      POSTGRES_USER: ${DB_USER:-algo}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-algo}
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-algo} -d ${DB_NAME:-algo}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - algo_net
-
 volumes:
-  pg_data:
   model_weights:
 
 networks:
