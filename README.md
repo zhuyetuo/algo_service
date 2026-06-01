@@ -4,6 +4,42 @@
 
 ---
 
+## 快速启动
+
+**前置条件**：PostgreSQL 和 TDengine 已在同服务器运行，模型文件 `weights/behavior_lgbm.pkl` 已就绪。
+
+```bash
+# 1. 拉取代码
+git clone <repo> && cd algo_service
+
+# 2. 配置（默认值已对齐本地环境，通常无需改动）
+cp .env.example .env
+
+# 3. 启动
+docker compose up -d --build
+
+# 4. 确认两个数据库连接正常
+curl http://localhost:8000/health
+```
+
+```bash
+# 查看日志
+docker logs algo_service -f
+
+# 停止服务
+docker compose stop
+
+# 停止并删除容器
+docker compose down
+
+# 停止并删除容器 + 数据卷（慎用，会清空 model_weights）
+docker compose down -v
+```
+
+> 详细说明见 [docs/deployment.md](docs/deployment.md)
+
+---
+
 ## 目录
 
 - [项目概述](#项目概述)
@@ -11,7 +47,6 @@
 - [算法流程](#算法流程)
 - [特征说明（93 维）](#特征说明93-维)
 - [数据文件说明](#数据文件说明)
-- [快速启动](#快速启动)
 - [配置项说明](#配置项说明)
 - [测试模块](#测试模块)
 
@@ -233,48 +268,6 @@ IMU 原始窗口池，由 `test_1_inference.py` 第一次运行时生成。
 | features_S3_Calm | 安静犬 | 运动 20% / 睡眠 77% / 抓挠 3% |
 | features_S4_Mild_skin | 轻度皮肤病（训练未见） | 抓挠 15% |
 | features_S5_Severe_skin | 重度皮肤病（训练未见） | 抓挠 30% |
-
----
-
-## 快速启动
-
-### 前置条件
-
-- PostgreSQL 实例（由后端统一维护，algo_service 不自带）
-- TDengine 实例（存储设备原始 IMU 数据，REST API 端口 6041）
-- 训练好的模型文件 `weights/behavior_lgbm.pkl`
-
-### Docker Compose 部署
-
-```bash
-# 复制并填写环境变量
-cp .env.example .env
-# 至少需要填写：DB_HOST、DB_PASSWORD、TD_HOST
-
-# 启动服务
-docker compose up -d --build
-
-# 查看日志（Ctrl+C 退出跟踪）
-docker logs algo_service -f
-```
-
-服务启动后：
-- API 文档：http://localhost:8000/docs
-- 健康检查：http://localhost:8000/health
-
-> **注意**：服务启动时会立即连接 PostgreSQL 初始化表结构，若数据库不可达会启动失败并持续重启。确保 `DB_HOST` 填写正确。
-
-### 训练模型（首次部署前）
-
-```bash
-cd algo_service
-python tests/test_1_inference.py
-```
-
-首次运行约 **20–25 秒**（建特征池 ~18s + 训练 ~5s）。  
-再次运行直接读 CSV，约 **5 秒**完成。
-
-模型保存至 `weights/behavior_lgbm.pkl`，通过 Docker volume 挂载进容器。
 
 ---
 
