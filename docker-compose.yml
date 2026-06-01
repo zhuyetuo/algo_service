@@ -10,24 +10,27 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DB_HOST=${DB_HOST:-postgres}
+      - DB_HOST=${DB_HOST:-host.docker.internal}
       - DB_PORT=${DB_PORT:-5432}
-      - DB_NAME=${DB_NAME:-algo}
-      - DB_USER=${DB_USER:-algo}
-      - DB_PASSWORD=${DB_PASSWORD:-algo}
+      - DB_NAME=${DB_NAME:-pet_collar}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-123456}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - IMU_SAMPLE_RATE=${IMU_SAMPLE_RATE:-50}
       - WINDOW_SECONDS=${WINDOW_SECONDS:-3}
       - WINDOW_OVERLAP=${WINDOW_OVERLAP:-0.5}
       - FETCH_INTERVAL_MIN=${FETCH_INTERVAL_MIN:-15}
-      - TD_HOST=${TD_HOST:-tdengine}
+      - TD_HOST=${TD_HOST:-host.docker.internal}
       - TD_PORT=${TD_PORT:-6041}
       - TD_USER=${TD_USER:-root}
       - TD_PASSWORD=${TD_PASSWORD:-taosdata}
       - TD_DATABASE=${TD_DATABASE:-hiccpet_device}
       - TD_SUPERTABLE=${TD_SUPERTABLE:-imu_data}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - model_weights:/app/weights
+      - ./logs:/app/logs
 
 volumes:
   model_weights:

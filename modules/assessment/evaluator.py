@@ -11,7 +11,6 @@
 7. 将结果写入 skin_assessment.{device_sn} 表
 """
 
-import logging
 import time
 from dataclasses import dataclass
 
@@ -20,11 +19,11 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from loguru import logger
+
 from config import settings
 from db.client import AsyncSessionLocal, get_session
 from modules.inference.model import BehaviorLabel
-
-logger = logging.getLogger(__name__)
 router = APIRouter()
 
 

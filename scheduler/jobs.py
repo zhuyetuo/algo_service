@@ -11,7 +11,6 @@
 """
 
 import asyncio
-import logging
 import time
 
 import numpy as np
@@ -20,14 +19,14 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import text
 
+from loguru import logger
+
 from config import settings
 from db.client import AsyncSessionLocal
 from db.tdengine import td_get_devices, td_fetch
 from modules.baseline.updater import run_baseline_update
 from modules.assessment.evaluator import run_batch_assessment, assess_device
 from modules.inference.model import BehaviorLabel, get_classifier
-
-logger = logging.getLogger(__name__)
 
 _scheduler = BackgroundScheduler()
 
