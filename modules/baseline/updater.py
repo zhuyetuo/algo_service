@@ -174,8 +174,8 @@ async def _update_one(device_sn: str) -> None:
         await db.commit()
 
         logger.info(
-            "基线更新完成 device=%s mean=%.2f std=%.2f coef=%.3f "
-            "wpeb_mean=%.4f wpeb_std=%.4f valid_days=%d",
+            "基线更新完成 device={} mean={:.2f} std={:.2f} coef={:.3f} "
+            "wpeb_mean={:.4f} wpeb_std={:.4f} valid_days={}",
             device_sn, cur_mean, cur_std, cur_coef,
             cur_wpeb_mean, cur_wpeb_std, valid_days,
         )
@@ -194,4 +194,4 @@ async def run_baseline_update() -> None:
         try:
             await _update_one(row.device_sn)
         except Exception:
-            logger.exception("基线更新失败 device=%s", row.device_sn)
+            logger.exception("基线更新失败 device={}", row.device_sn)

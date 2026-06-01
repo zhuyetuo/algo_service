@@ -621,13 +621,13 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
 
     if alert_level > 0:
         logger.warning(
-            "ALERT device=%s stat_date_ts=%d alert_level=%d reason=%s",
+            "ALERT device={} stat_date_ts={} alert_level={} reason={}",
             device_sn, stat_date_ts, alert_level, alert_reason,
         )
     else:
         logger.info(
-            "评估完成 device=%s phase=%d zscore=%s consec=%d alert_level=%d "
-            "total_score=%.2f health_level=%d",
+            "评估完成 device={} phase={} zscore={} consec={} alert_level={} "
+            "total_score={:.2f} health_level={}",
             device_sn, phase, zscore, consec_abnormal, alert_level,
             total_score, health_level,
         )
@@ -661,7 +661,7 @@ async def run_batch_assessment(stat_date_ts: int | None = None) -> None:
             try:
                 await assess_device(db, row.device_sn, stat_date_ts)
             except Exception:
-                logger.exception("评估失败 device=%s", row.device_sn)
+                logger.exception("评估失败 device={}", row.device_sn)
 
 
 # ---------------------------------------------------------------------------

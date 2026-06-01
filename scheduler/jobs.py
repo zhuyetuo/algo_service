@@ -63,7 +63,7 @@ def start_scheduler():
     )
     _scheduler.start()
     logger.info(
-        "调度器已启动 — 推理每 %d 分钟执行，评估 %s，基线更新 %s",
+        "调度器已启动 — 推理每 {} 分钟执行，评估 {}，基线更新 {}",
         settings.fetch_interval_min,
         settings.assessment_cron,
         settings.baseline_update_cron,
@@ -89,7 +89,7 @@ async def run_inference_cycle() -> None:
     5. 历史完整天（非今天）立即补跑 assess_device
     6. 更新 device_sync_state.last_processed_ts
     """
-    logger.info("推理周期开始（fetch_interval=%d 分钟）", settings.fetch_interval_min)
+    logger.info("推理周期开始（fetch_interval={} 分钟）", settings.fetch_interval_min)
 
     try:
         clf = get_classifier()
@@ -136,7 +136,7 @@ async def run_inference_cycle() -> None:
             imu_rows = await asyncio.to_thread(td_fetch, device_sn, last_ts)
 
             if not imu_rows:
-                logger.debug("设备 %s 暂无新 IMU 数据", device_sn)
+                logger.debug("设备 {} 暂无新 IMU 数据", device_sn)
                 continue
 
             # 按 UTC 日期零点分组（ts_ms // 86_400_000 * 86_400_000）
@@ -195,7 +195,7 @@ async def run_inference_cycle() -> None:
                             })
                         await db.commit()
 
-                    logger.info("设备=%s 日期=%d 事件数=%d", device_sn, day_ts, len(events))
+                    logger.info("设备={} 日期={} 事件数={}", device_sn, day_ts, len(events))
 
                     # 历史完整天（非今天）立即触发皮肤评估
                     if day_ts < today_ts:
@@ -203,7 +203,7 @@ async def run_inference_cycle() -> None:
                             await assess_device(db, device_sn, day_ts)
 
                 except Exception:
-                    logger.exception("设备 %s 日期 %d 推理失败", device_sn, day_ts)
+                    logger.exception("设备 {} 日期 {} 推理失败", device_sn, day_ts)
 
             # 更新 device_sync_state.last_processed_ts
             now_ms = int(time.time() * 1000)
@@ -216,4 +216,4 @@ async def run_inference_cycle() -> None:
                 await db.commit()
 
         except Exception:
-            logger.exception("设备 %s 推理周期失败", device_sn)
+            logger.exception("设备 {} 推理周期失败", device_sn)
