@@ -24,14 +24,15 @@
 | 语言 | Python 3.11+ |
 | 框架 | FastAPI + APScheduler |
 | 模型 | LightGBM（CPU，无 GPU 依赖） |
+| 时序数据库 | TDengine（taosrest HTTP 连接器） |
 | 数据库 | PostgreSQL（asyncpg + SQLAlchemy async） |
 | 部署 | Docker Compose |
 
 核心功能：
 
-1. **行为识别**：每 15 分钟从数据库拉取 IMU 原始数据，滑动窗口分割后提取特征，LightGBM 分类为 MOVEMENT / SLEEP / SCRATCH / UNKNOWN，写入 `pet_behavior_record`。
-2. **皮肤健康日评估**：每天凌晨 03:00 UTC 汇总抓挠次数，与个体基线对比计算 Z-score，三层阈值（Z 值、连续天数、平均 Z）触发告警，写入 `pet_skin_health_daily`。
-3. **基线更新**：每天凌晨 02:00 UTC 用过去 30 天的有效数据更新个体基线（指数加权移动平均 + 温度系数最小二乘拟合），写入 `pet_skin_baseline`。
+1. **行为识别**：每 15 分钟从 TDengine 拉取最新 IMU 数据，滑动窗口分割后提取特征，LightGBM 分类为 MOVEMENT / SLEEP / SCRATCH / UNKNOWN，按设备写入 `behavior.{device_sn}` 表。
+2. **皮肤健康日评估**：每天凌晨 03:00 UTC 汇总抓挠次数，与个体基线对比计算 Z-score，三层阈值（Z 值、连续天数、平均 Z）触发分级告警，写入 `skin_assessment.{device_sn}` 表。
+3. **基线更新**：每天凌晨 02:00 UTC 用过去 30 天的有效数据更新个体基线（EWMA + 软冻结），写入 `baseline.{device_sn}` 表。
 
 ---
 
@@ -46,7 +47,8 @@ algo_service/
 ├── docker-compose.yml
 │
 ├── db/
-│   └── client.py                AsyncSessionLocal（asyncpg）
+│   ├── client.py                AsyncSessionLocal（asyncpg）
+│   └── tdengine.py              TDengine REST 连接与数据拉取（同步）
 │
 ├── modules/
 │   ├── inference/
@@ -236,28 +238,31 @@ IMU 原始窗口池，由 `test_1_inference.py` 第一次运行时生成。
 
 ## 快速启动
 
-### 环境要求
+### 前置条件
 
-```bash
-pip install -r requirements.txt
-```
+- PostgreSQL 实例（由后端统一维护，algo_service 不自带）
+- TDengine 实例（存储设备原始 IMU 数据，REST API 端口 6041）
+- 训练好的模型文件 `weights/behavior_lgbm.pkl`
 
 ### Docker Compose 部署
 
 ```bash
-# 复制并编辑环境变量
+# 复制并填写环境变量
 cp .env.example .env
+# 至少需要填写：DB_HOST、DB_PASSWORD、TD_HOST
 
 # 启动服务
-docker compose up -d
+docker compose up -d --build
 
-# 查看日志
-docker compose logs -f algo_service
+# 查看日志（Ctrl+C 退出跟踪）
+docker logs algo_service -f
 ```
 
 服务启动后：
 - API 文档：http://localhost:8000/docs
 - 健康检查：http://localhost:8000/health
+
+> **注意**：服务启动时会立即连接 PostgreSQL 初始化表结构，若数据库不可达会启动失败并持续重启。确保 `DB_HOST` 填写正确。
 
 ### 训练模型（首次部署前）
 
@@ -279,11 +284,18 @@ python tests/test_1_inference.py
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `DB_HOST` | `postgres` | 数据库主机 |
-| `DB_PORT` | `5432` | 数据库端口 |
+| `DB_HOST` | `postgres` | **PostgreSQL 主机地址（必填）** |
+| `DB_PORT` | `5432` | PostgreSQL 端口 |
 | `DB_NAME` | `algo` | 数据库名 |
 | `DB_USER` | `algo` | 数据库用户 |
 | `DB_PASSWORD` | `algo` | 数据库密码 |
+| `TD_HOST` | `tdengine` | **TDengine 主机地址（必填）** |
+| `TD_PORT` | `6041` | TDengine REST API 端口 |
+| `TD_USER` | `root` | TDengine 用户名 |
+| `TD_PASSWORD` | `taosdata` | TDengine 密码 |
+| `TD_DATABASE` | `hiccpet_device` | TDengine 数据库名 |
+| `TD_SUPERTABLE` | `imu_data` | IMU 超级表名 |
+| `TD_BATCH_SIZE` | `50000` | 每次拉取最大行数 |
 | `MODEL_PATH` | `weights/behavior_lgbm.pkl` | 模型文件路径 |
 | `IMU_SAMPLE_RATE` | `50` | IMU 采样率（Hz） |
 | `WINDOW_SECONDS` | `3` | 分类滑动窗口时长（秒） |
@@ -295,8 +307,6 @@ python tests/test_1_inference.py
 | `PHASE2_THRESHOLD_Z` | `3.5` | 中期阶段 Z-score 阈值 |
 | `PHASE3_THRESHOLD_Z` | `2.5` | 稳定阶段 Z-score 阈值 |
 | `BASELINE_STD_FLOOR` | `2.0` | 基线标准差下限（防除零） |
-| `NORMAL_DAY_WEIGHT` | `0.05` | 正常天基线更新权重 |
-| `ABNORMAL_DAY_WEIGHT` | `0.01` | 异常天基线更新权重 |
 | `MIN_WEAR_MINUTES` | `480` | 每天最少佩戴时长（分钟） |
 
 ---
