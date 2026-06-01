@@ -4,6 +4,9 @@ from fastapi import FastAPI
 
 from config import settings
 from db.client import init_db, close_db
+from log import setup_logging
+
+setup_logging()
 from modules.inference.handler import router as inference_router
 from modules.assessment.evaluator import router as assessment_router
 from scheduler.jobs import start_scheduler, stop_scheduler

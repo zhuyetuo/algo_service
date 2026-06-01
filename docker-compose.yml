@@ -28,6 +28,7 @@ services:
       - TD_SUPERTABLE=${TD_SUPERTABLE:-imu_data}
     volumes:
       - model_weights:/app/weights
+      - ./logs:/app/logs
 
 volumes:
   model_weights:

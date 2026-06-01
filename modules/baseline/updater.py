@@ -13,16 +13,15 @@
 - 设备列表来源：device_sync_state（统一表）
 """
 
-import logging
 import time
 
 import numpy as np
 from sqlalchemy import text
 
+from loguru import logger
+
 from config import settings
 from db.client import AsyncSessionLocal
-
-logger = logging.getLogger(__name__)
 
 
 async def _update_one(device_sn: str) -> None:
