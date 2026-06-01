@@ -20,6 +20,12 @@ services:
       - WINDOW_SECONDS=${WINDOW_SECONDS:-3}
       - WINDOW_OVERLAP=${WINDOW_OVERLAP:-0.5}
       - FETCH_INTERVAL_MIN=${FETCH_INTERVAL_MIN:-15}
+      - TD_HOST=${TD_HOST:-tdengine}
+      - TD_PORT=${TD_PORT:-6041}
+      - TD_USER=${TD_USER:-root}
+      - TD_PASSWORD=${TD_PASSWORD:-taosdata}
+      - TD_DATABASE=${TD_DATABASE:-hiccpet_device}
+      - TD_SUPERTABLE=${TD_SUPERTABLE:-imu_data}
     depends_on:
       postgres:
         condition: service_healthy
