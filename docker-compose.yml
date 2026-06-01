@@ -28,12 +28,6 @@ services:
       - TD_SUPERTABLE=${TD_SUPERTABLE:-imu_data}
     volumes:
       - model_weights:/app/weights
-    networks:
-      - algo_net
 
 volumes:
   model_weights:
-
-networks:
-  algo_net:
-    driver: bridge
