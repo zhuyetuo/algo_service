@@ -29,8 +29,5 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - model_weights:/app/weights
+      - ./weights:/app/weights
       - ./logs:/app/logs
-
-volumes:
-  model_weights:
