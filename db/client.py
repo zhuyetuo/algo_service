@@ -16,7 +16,12 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         # 创建每设备表所需的 schema
-        for schema in ("behavior", "skin_assessment", "environment"):
+        for schema in (
+            settings.pg_schema_behavior,
+            settings.pg_schema_assessment,
+            settings.pg_schema_environment,
+            settings.pg_schema_baseline,
+        ):
             await conn.execute(
                 text(f"CREATE SCHEMA IF NOT EXISTS {schema}")
             )

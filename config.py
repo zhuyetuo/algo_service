@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     # 最小佩戴分钟数，低于此值视为当天无效
     min_wear_minutes: int = 480  # 8小时
 
+    # PostgreSQL schema 名称
+    pg_schema_behavior: str = "pet_dog_behavior"
+    pg_schema_assessment: str = "pet_dog_skin_assessment"
+    pg_schema_environment: str = "pet_dog_environment"
+    pg_schema_baseline: str = "pet_dog_scratch_baseline"
+
     # TDengine 连接配置（REST HTTP 连接器，端口 6041）
     td_host: str = "localhost"
     td_port: int = 6041
