@@ -221,3 +221,6 @@ __marimo__/
 tests/data/
 tests/*.png
 weights/*.pkl
+
+# 训练生成的中间数据
+train/data/
