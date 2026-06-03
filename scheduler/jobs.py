@@ -3,11 +3,11 @@
 
 三个任务：
   inference_cycle  — 每隔 FETCH_INTERVAL_MIN 分钟执行
-                     从 TDengine 拉取 IMU 数据 → 行为事件 → behavior.{device_sn}
+                     从 TDengine 拉取 IMU 数据 → 行为事件 → pet_dog_behavior.{device_sn}
   batch_assessment — 每天执行
-                     汇总抓挠统计 → z-score → skin_assessment.{device_sn}
+                     汇总抓挠统计 → z-score → pet_dog_skin_assessment.{device_sn}
   baseline_update  — 每天执行
-                     重新计算个体基线 → pet_skin_baseline
+                     重新计算个体基线 → pet_dog_scratch_baseline.pet_skin_baseline
 """
 
 import asyncio
@@ -85,7 +85,7 @@ async def run_inference_cycle() -> None:
     1. 从 TDengine 获取所有设备列表，同步到 device_sync_state
     2. 对每个设备，读取 last_processed_ts，拉取新 IMU 数据
     3. 无新数据则跳过；有数据则按 UTC 日期分组
-    4. 每组数据跑 LightGBM，写入 behavior.{device_sn} 表
+    4. 每组数据跑 LightGBM，写入 pet_dog_behavior.{device_sn} 表
     5. 历史完整天（非今天）立即补跑 assess_device
     6. 更新 device_sync_state.last_processed_ts
     """
@@ -162,11 +162,11 @@ async def run_inference_cycle() -> None:
                     # 运行行为分类推理
                     events = clf.predict(data, base_ts_ms)
 
-                    # 写入 behavior.{device_sn} 表（先建表）
+                    # 写入 pet_dog_behavior.{device_sn} 表（先建表）
                     async with AsyncSessionLocal() as db:
                         # 建表 SQL，每次写入前确保表存在
                         await db.execute(text(f"""
-                            CREATE TABLE IF NOT EXISTS behavior.{device_sn} (
+                            CREATE TABLE IF NOT EXISTS {settings.pg_schema_behavior}.{device_sn} (
                                 id           bigserial PRIMARY KEY,
                                 ts_start     bigint        NOT NULL,
                                 ts_end       bigint        NOT NULL,
@@ -181,7 +181,7 @@ async def run_inference_cycle() -> None:
                             btype = int(ev["behavior_type"])
                             dur_sec = round((ev["end_time"] - ev["start_time"]) / 1000.0, 2)
                             await db.execute(text(f"""
-                                INSERT INTO behavior.{device_sn}
+                                INSERT INTO {settings.pg_schema_behavior}.{device_sn}
                                     (ts_start, ts_end, behavior, duration_sec, confidence)
                                 VALUES
                                     (:ts_start, :ts_end, :behavior, :duration_sec, :confidence)

@@ -2,7 +2,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        protected_namespaces=(),
+    )
 
     # 数据库连接配置
     db_host: str = "postgres"
@@ -68,13 +72,19 @@ class Settings(BaseSettings):
     # 最小佩戴分钟数，低于此值视为当天无效
     min_wear_minutes: int = 480  # 8小时
 
+    # PostgreSQL schema 名称
+    pg_schema_behavior: str = "pet_dog_behavior"
+    pg_schema_assessment: str = "pet_dog_skin_assessment"
+    pg_schema_environment: str = "pet_dog_environment"
+    pg_schema_baseline: str = "pet_dog_scratch_baseline"
+
     # TDengine 连接配置（REST HTTP 连接器，端口 6041）
     td_host: str = "localhost"
     td_port: int = 6041
     td_user: str = "root"
     td_password: str = "taosdata"
-    td_database: str = "hiccpet_device"
-    td_supertable: str = "imu_data"
+    td_database: str = "pet_collar_raw"
+    td_supertable: str = "imu_raw"
     # 每次从 TDengine 单设备拉取的最大行数
     td_batch_size: int = 50000
 

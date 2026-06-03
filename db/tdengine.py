@@ -13,8 +13,12 @@ def _get_conn() -> taosrest.TaosRestConnection:
         url=f"http://{settings.td_host}:{settings.td_port}",
         user=settings.td_user,
         password=settings.td_password,
-        database=settings.td_database,
     )
+
+
+def _table() -> str:
+    """返回全限定超级表名，避免 taosrest 不传 database 参数的问题。"""
+    return f"{settings.td_database}.{settings.td_supertable}"
 
 
 def _ts_to_ms(ts) -> int:
@@ -36,7 +40,7 @@ def td_get_devices() -> list[str]:
     conn = _get_conn()
     try:
         cursor = conn.cursor()
-        cursor.execute(f"SELECT DISTINCT device_sn FROM {settings.td_supertable}")
+        cursor.execute(f"SELECT DISTINCT device_sn FROM {_table()}")
         rows = cursor.fetchall()
         return [str(r[0]).strip() for r in rows]
     finally:
@@ -55,7 +59,7 @@ def td_fetch(device_sn: str, last_ts_ms: int) -> list[dict]:
         # 使用超级表按 device_sn tag 过滤，效率等同于直接查子表
         cursor.execute(f"""
             SELECT ts, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
-            FROM {settings.td_supertable}
+            FROM {_table()}
             WHERE device_sn = '{device_sn}'
               AND ts > {last_ts_ms}
             ORDER BY ts

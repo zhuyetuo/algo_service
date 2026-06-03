@@ -2,13 +2,13 @@
 每日皮肤健康评估模块。
 
 逻辑流程（与 demo_all.py 设计一致）：
-1. 从 behavior.{device_sn} 汇总当日抓挠事件
-2. 从 pet_skin_baseline 读取个体基线
+1. 从 pet_dog_behavior.{device_sn} 汇总当日抓挠事件
+2. 从 pet_dog_scratch_baseline.pet_skin_baseline 读取个体基线
 3. 在 Z-score 层面进行温度修正（原始计数不做修改）
 4. 根据 eval_phase 应用动态阈值
 5. 跟踪连续异常天数
 6. 计算 S1-S6 各维度分数及综合健康等级
-7. 将结果写入 skin_assessment.{device_sn} 表
+7. 将结果写入 pet_dog_skin_assessment.{device_sn} 表
 """
 
 import time
@@ -187,15 +187,15 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
     计算并写入单台设备的每日皮肤健康记录。
 
     stat_date_ts：该设备当地日期零点的 UTC 毫秒时间戳，由调用方传入（后端负责时区转换）。
-    数据读取来源：behavior.{device_sn}、skin_assessment.{device_sn}、environment.{device_sn}。
+    数据读取来源：pet_dog_behavior.{device_sn}、pet_dog_skin_assessment.{device_sn}、pet_dog_environment.{device_sn}。
     """
     day_end_ts = stat_date_ts + 86_400_000  # 当天结束毫秒时间戳（+24小时）
 
-    # ── 1. 汇总当日抓挠事件（从 behavior.{device_sn} 读取） ──────────────────
+    # ── 1. 汇总当日抓挠事件（从 pet_dog_behavior.{device_sn} 读取） ──────────────────
     # SCRATCH 行为枚举值为 3，直接用整数过滤，无需 device_sn 参数
     scratch_sql = text(f"""
         SELECT ts_start, ts_end, confidence
-        FROM   behavior.{device_sn}
+        FROM   {settings.pg_schema_behavior}.{device_sn}
         WHERE  behavior   = {int(BehaviorLabel.SCRATCH)}
           AND  ts_start  >= :day_start
           AND  ts_start   < :day_end
@@ -276,7 +276,7 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
         logger.debug("device_wear_state 表不可访问，使用行为记录时长 fallback")
         wear_sql = text(f"""
             SELECT COALESCE(SUM(ts_end - ts_start), 0) AS wore_ms
-            FROM   behavior.{device_sn}
+            FROM   {settings.pg_schema_behavior}.{device_sn}
             WHERE  ts_start >= :day_start
               AND  ts_start  < :day_end
         """)
@@ -291,11 +291,11 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
     if wear_minutes < settings.min_wear_minutes:
         data_quality = 1  # 无效天，数据不足
 
-    # ── 4. 读取基线（pet_skin_baseline 仍为统一表，按 device_sn 主键） ────────
-    bl_sql = text("""
+    # ── 4. 读取基线（pet_dog_scratch_baseline.pet_skin_baseline，按 device_sn 主键） ────────
+    bl_sql = text(f"""
         SELECT baseline_mean, baseline_std, temp_coef, valid_days,
                wpeb_mean, wpeb_std
-        FROM   pet_skin_baseline
+        FROM   {settings.pg_schema_baseline}.pet_skin_baseline
         WHERE  device_sn = :sn
     """)
     try:
@@ -328,10 +328,10 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
     phase  = eval_phase(valid_days)
     thresh = get_threshold(valid_days)
 
-    # ── 5. 读取日均体温（从 skin_assessment.{device_sn} 读取已有记录） ────────
+    # ── 5. 读取日均体温（从 pet_dog_skin_assessment.{device_sn} 读取已有记录） ────────
     # 确保皮肤评估表已存在
     await db.execute(text(f"""
-        CREATE TABLE IF NOT EXISTS skin_assessment.{device_sn} (
+        CREATE TABLE IF NOT EXISTS {settings.pg_schema_assessment}.{device_sn} (
             stat_date_ts       bigint PRIMARY KEY,
             scratch_count      int            NOT NULL DEFAULT 0,
             scratch_duration   bigint         NOT NULL DEFAULT 0,
@@ -373,7 +373,7 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
     """))
 
     avg_temp_sql = text(f"""
-        SELECT avg_temperature FROM skin_assessment.{device_sn}
+        SELECT avg_temperature FROM {settings.pg_schema_assessment}.{device_sn}
         WHERE stat_date_ts = :ts
     """)
     try:
@@ -397,7 +397,7 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
     if data_quality == 1:
         # 数据不足：读取上一天的 consec_abnormal 原样保留（跳过本天）
         prev_consec_sql = text(f"""
-            SELECT consec_abnormal FROM skin_assessment.{device_sn}
+            SELECT consec_abnormal FROM {settings.pg_schema_assessment}.{device_sn}
             WHERE  stat_date_ts < :ts
             ORDER BY stat_date_ts DESC
             LIMIT 1
@@ -416,7 +416,7 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
 
         # 读取近 N 天 z-score 计算滑动均值
         recent_sql = text(f"""
-            SELECT zscore FROM skin_assessment.{device_sn}
+            SELECT zscore FROM {settings.pg_schema_assessment}.{device_sn}
             WHERE  stat_date_ts < :ts
               AND  data_quality  = 0
               AND  zscore IS NOT NULL
@@ -435,7 +435,7 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
 
         # 读取上一个有效天的连续计数
         prev_sql = text(f"""
-            SELECT consec_abnormal FROM skin_assessment.{device_sn}
+            SELECT consec_abnormal FROM {settings.pg_schema_assessment}.{device_sn}
             WHERE  stat_date_ts < :ts
               AND  data_quality  = 0
             ORDER BY stat_date_ts DESC
@@ -457,13 +457,13 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
             f"均值z={avg_zscore}"
         )
 
-    # ── 8. 夜间睡眠段数（从 behavior.{device_sn} 查询，用于 S3） ────────────
+    # ── 8. 夜间睡眠段数（从 pet_dog_behavior.{device_sn} 查询，用于 S3） ────────────
     # SLEEP 行为枚举值为 2，直接用整数过滤
     night_sleep_segments = 0
     try:
         sleep_sql = text(f"""
             SELECT COUNT(*) AS seg_count
-            FROM   behavior.{device_sn}
+            FROM   {settings.pg_schema_behavior}.{device_sn}
             WHERE  behavior   = {int(BehaviorLabel.SLEEP)}
               AND  ts_start  >= :night_start
               AND  ts_start   < :night_end
@@ -476,13 +476,13 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
     except Exception:
         night_sleep_segments = 0
 
-    # ── 9. 读取环境数据（从 environment.{device_sn} 读取，用于 S6） ──────────
+    # ── 9. 读取环境数据（从 pet_dog_environment.{device_sn} 读取，用于 S6） ──────────
     env_temp = None
     env_humidity = None
     try:
         env_sql = text(f"""
             SELECT env_temp, env_humidity
-            FROM   environment.{device_sn}
+            FROM   {settings.pg_schema_environment}.{device_sn}
             WHERE  ts = :day_ts
         """)
         env_row = (await db.execute(env_sql, {"day_ts": stat_date_ts})).fetchone()
@@ -490,7 +490,7 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
             env_temp     = float(env_row.env_temp) if env_row.env_temp is not None else None
             env_humidity = float(env_row.env_humidity) if env_row.env_humidity is not None else None
     except Exception:
-        # environment.{device_sn} 表不存在时 S6 为 0
+        # pet_dog_environment.{device_sn} 表不存在时 S6 为 0
         pass
 
     # ── 10. 各维度评分 ────────────────────────────────────────────────────────
@@ -503,7 +503,7 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
     s5_score = 0.0
     try:
         s5_sql = text(f"""
-            SELECT s5_score FROM skin_assessment.{device_sn}
+            SELECT s5_score FROM {settings.pg_schema_assessment}.{device_sn}
             WHERE stat_date_ts = :ts
         """)
         s5_row = (await db.execute(s5_sql, {"ts": stat_date_ts})).fetchone()
@@ -517,11 +517,11 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
     total_score = float(max(0.0, min(100.0, s1_score + s2_score + s3_score + s4_score + s5_score + s6_score)))
     health_level = _score_to_level(total_score)
 
-    # ── 11. Upsert 结果写入 skin_assessment.{device_sn} ─────────────────────
+    # ── 11. Upsert 结果写入 pet_dog_skin_assessment.{device_sn} ─────────────────────
     # 无 device_sn 列，stat_date_ts 为主键，ON CONFLICT 按主键更新
     now_ms = int(time.time() * 1000)
     upsert_sql = text(f"""
-        INSERT INTO skin_assessment.{device_sn} (
+        INSERT INTO {settings.pg_schema_assessment}.{device_sn} (
             stat_date_ts,
             scratch_count, scratch_duration, scratch_avg_dur, scratch_max_dur,
             night_scratch_count,
@@ -688,7 +688,7 @@ async def get_report(
     device_sn: str,
     db: AsyncSession = Depends(get_session),
 ):
-    """返回指定设备最新一天的评估报告（从 skin_assessment.{device_sn} 读取）。"""
+    """返回指定设备最新一天的评估报告（从 pet_dog_skin_assessment.{device_sn} 读取）。"""
     # 动态构造表名，device_sn 来自内部系统，安全
     sql = text(f"""
         SELECT '{device_sn}' AS device_sn,
@@ -698,8 +698,8 @@ async def get_report(
                d.eval_phase, d.valid_days,
                b.confidence,
                d.total_score, d.health_level
-        FROM   skin_assessment.{device_sn} d
-        LEFT JOIN pet_skin_baseline b ON b.device_sn = '{device_sn}'
+        FROM   {settings.pg_schema_assessment}.{device_sn} d
+        LEFT JOIN {settings.pg_schema_baseline}.pet_skin_baseline b ON b.device_sn = '{device_sn}'
         ORDER BY d.stat_date_ts DESC
         LIMIT 1
     """)

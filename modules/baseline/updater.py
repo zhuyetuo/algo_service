@@ -9,7 +9,7 @@
 - 每天执行（由调度器 cron 驱动）
 - 使用过去30天的有效天数重新计算标准差和温度系数
 - 同步更新 wpeb_mean 和 wpeb_std 的 EWMA
-- 数据来源：skin_assessment.{device_sn}（每设备独立表）
+- 数据来源：pet_dog_skin_assessment.{device_sn}（每设备独立表），基线写入 pet_dog_scratch_baseline.pet_skin_baseline
 - 设备列表来源：device_sync_state（统一表）
 """
 
@@ -26,10 +26,10 @@ from db.client import AsyncSessionLocal
 
 async def _update_one(device_sn: str) -> None:
     async with AsyncSessionLocal() as db:
-        # 从 skin_assessment.{device_sn} 拉取过去30天有效天的数据（data_quality=0）
+        # 从 pet_dog_skin_assessment.{device_sn} 拉取过去30天有效天的数据（data_quality=0）
         rows_sql = text(f"""
             SELECT scratch_count, avg_temperature, zscore, wpeb_score
-            FROM   skin_assessment.{device_sn}
+            FROM   {settings.pg_schema_assessment}.{device_sn}
             WHERE  data_quality = 0
             ORDER BY stat_date_ts DESC
             LIMIT 30
@@ -39,11 +39,11 @@ async def _update_one(device_sn: str) -> None:
         if not rows:
             return
 
-        # 读取当前基线（pet_skin_baseline 仍为按 device_sn 主键的统一表）
-        bl_sql = text("""
+        # 读取当前基线（pet_dog_scratch_baseline.pet_skin_baseline 按 device_sn 主键的统一表）
+        bl_sql = text(f"""
             SELECT baseline_mean, baseline_std, temp_coef, valid_days,
                    wpeb_mean, wpeb_std
-            FROM   pet_skin_baseline
+            FROM   {settings.pg_schema_baseline}.pet_skin_baseline
             WHERE  device_sn = :sn
         """)
         try:
@@ -137,8 +137,8 @@ async def _update_one(device_sn: str) -> None:
         now_ms = int(time.time() * 1000)
 
         # Upsert 写入基线，包含 wpeb_mean 和 wpeb_std
-        upsert_sql = text("""
-            INSERT INTO pet_skin_baseline
+        upsert_sql = text(f"""
+            INSERT INTO {settings.pg_schema_baseline}.pet_skin_baseline
                 (device_sn, baseline_mean, baseline_std, temp_coef,
                  valid_days, eval_phase, confidence,
                  wpeb_mean, wpeb_std,
