@@ -229,6 +229,7 @@ async def _sync_env_for_device(device_sn: str) -> None:
     neck_rows = await asyncio.to_thread(td_fetch_neck_temp, device_sn, last_neck_temp_ts)
 
     if not env_rows and not neck_rows:
+        logger.info("设备 {} 环境/体温数据无更新，跳过", device_sn)
         return
 
     # 按 UTC 日期零点聚合：每天取均值
@@ -380,7 +381,7 @@ async def run_inference_cycle() -> None:
             imu_rows = await asyncio.to_thread(td_fetch, device_sn, last_ts)
 
             if not imu_rows:
-                logger.debug("设备 {} 暂无新 IMU 数据", device_sn)
+                logger.info("设备 {} 数据无更新，跳过本次推理", device_sn)
                 continue
 
             # 按 UTC 日期零点分组
