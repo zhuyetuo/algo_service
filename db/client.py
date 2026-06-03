@@ -28,12 +28,19 @@ async def init_db():
         # 记录每个设备在 TDengine 上次处理到的时间戳
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS device_sync_state (
-                device_sn         varchar(64) PRIMARY KEY,
-                last_processed_ts bigint      NOT NULL DEFAULT 0,
-                last_sync_at      bigint,
-                updated_at        bigint
+                device_sn           varchar(64) PRIMARY KEY,
+                last_processed_ts   bigint      NOT NULL DEFAULT 0,
+                last_env_ts         bigint      NOT NULL DEFAULT 0,
+                last_neck_temp_ts   bigint      NOT NULL DEFAULT 0,
+                last_sync_at        bigint,
+                updated_at          bigint
             )
         """))
+        # 若旧表已存在，补上新增列（幂等）
+        for col in ("last_env_ts", "last_neck_temp_ts"):
+            await conn.execute(text(
+                f"ALTER TABLE device_sync_state ADD COLUMN IF NOT EXISTS {col} bigint NOT NULL DEFAULT 0"
+            ))
         # 记录推理失败的任务，用于重试和事后分析
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS processing_errors (

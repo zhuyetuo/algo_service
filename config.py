@@ -85,6 +85,8 @@ class Settings(BaseSettings):
     td_password: str = "taosdata"
     td_database: str = "pet_collar_raw"
     td_supertable: str = "imu_raw"
+    td_supertable_env: str = "env_raw"
+    td_supertable_neck_temp: str = "neck_temp_raw"
     # 每次从 TDengine 单设备拉取的最大行数
     td_batch_size: int = 50000
 
