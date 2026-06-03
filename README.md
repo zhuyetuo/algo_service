@@ -6,7 +6,7 @@
 
 ## 快速启动
 
-**前置条件**：PostgreSQL 和 TDengine 已在同服务器运行，模型文件 `weights/behavior_lgbm.pkl` 已就绪。
+**前置条件**：PostgreSQL 和 TDengine 已在同服务器运行。
 
 ```bash
 # 1. 拉取代码
@@ -15,10 +15,13 @@ git clone <repo> && cd algo_service
 # 2. 配置（默认值已对齐本地环境，通常无需改动）
 cp .env.example .env
 
-# 3. 启动
+# 3. 训练模型（首次运行约 20-25 秒，生成 weights/behavior_lgbm.pkl）
+python train/train.py
+
+# 4. 启动服务
 docker compose up -d --build
 
-# 4. 确认两个数据库连接正常
+# 5. 确认两个数据库连接正常
 curl http://localhost:8000/health
 ```
 
@@ -98,7 +101,11 @@ algo_service/
 │   └── jobs.py                  APScheduler 三个定时任务
 │
 ├── weights/
-│   └── behavior_lgbm.pkl        训练好的模型（由 test_1 生成，不纳入版本库）
+│   └── behavior_lgbm.pkl        训练好的模型（由 train/train.py 生成，不纳入版本库）
+│
+├── train/
+│   ├── train.py                 模型训练脚本（合成数据 + LightGBM）
+│   └── data/                    训练缓存 CSV（不纳入版本库）
 │
 └── tests/
     ├── data/                    测试生成的 CSV 数据（不纳入版本库）
@@ -286,8 +293,8 @@ IMU 原始窗口池，由 `test_1_inference.py` 第一次运行时生成。
 | `TD_PORT` | `6041` | TDengine REST API 端口 |
 | `TD_USER` | `root` | TDengine 用户名 |
 | `TD_PASSWORD` | `taosdata` | TDengine 密码 |
-| `TD_DATABASE` | `hiccpet_device` | TDengine 数据库名 |
-| `TD_SUPERTABLE` | `imu_data` | IMU 超级表名 |
+| `TD_DATABASE` | `pet_collar_raw` | TDengine 数据库名 |
+| `TD_SUPERTABLE` | `imu_raw` | IMU 超级表名 |
 | `TD_BATCH_SIZE` | `50000` | 每次拉取最大行数 |
 | `MODEL_PATH` | `weights/behavior_lgbm.pkl` | 模型文件路径 |
 | `IMU_SAMPLE_RATE` | `50` | IMU 采样率（Hz） |
@@ -349,3 +356,39 @@ python tests/test_3_baseline.py
 | T4 阶段转换 | 180 天完整周期 | 置信度达到 1.0，均值误差 < 1.5 |
 
 输出 PASS/FAIL + 图表 `tests/test_3_baseline.png`
+
+---
+
+## 模型训练
+
+模型文件 `weights/behavior_lgbm.pkl` 不纳入版本库，需在本机训练后再启动服务。
+
+```bash
+# 在项目根目录执行（需要先安装 requirements.txt）
+cd algo_service
+python train/train.py
+```
+
+**训练过程：**
+1. 生成合成 IMU 数据（S1 正常 / S2 活跃 / S3 安静，各 180 天）
+2. 提取 93 维特征，80/20 划分训练集/验证集
+3. 训练 LightGBM（300 棵树，早停 30 轮）
+4. 保存模型到 `weights/behavior_lgbm.pkl`
+
+首次运行约 20–25 秒；训练数据缓存在 `train/data/`，再次运行约 5 秒。删除 `train/data/` 可强制重新生成数据。
+
+> 如果需要更高精度的模型，也可用 `tests/test_1_inference.py` 替代——它会额外输出 5 场景评估报告和混淆矩阵，模型同样保存到 `weights/behavior_lgbm.pkl`。
+
+---
+
+## 单元测试
+
+```bash
+# 安装测试依赖
+pip install -r requirements-dev.txt
+
+# 运行全部单元测试（无需真实数据库）
+python -m pytest tests/unit/ -v
+```
+
+88 个测试，覆盖特征提取、评分函数、基线算法、TDengine 工具函数、`/health` 接口。
