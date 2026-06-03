@@ -58,7 +58,7 @@ def td_fetch(device_sn: str, last_ts_ms: int) -> list[dict]:
         cursor = conn.cursor()
         # 使用超级表按 device_sn tag 过滤，效率等同于直接查子表
         cursor.execute(f"""
-            SELECT ts, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
+            SELECT ts, ax, ay, az, gx, gy, gz
             FROM {_table()}
             WHERE device_sn = '{device_sn}'
               AND ts > {last_ts_ms}
