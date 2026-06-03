@@ -170,82 +170,13 @@ IMU 原始数据 (N×6, 50 Hz)
 
 ## 配置项说明
 
-所有配置项均可通过环境变量或 `.env` 文件覆盖（大写下划线形式）。
-
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| `DB_HOST` | `postgres` | **PostgreSQL 主机地址（必填）** |
-| `DB_PORT` | `5432` | PostgreSQL 端口 |
-| `DB_NAME` | `algo` | 数据库名 |
-| `DB_USER` | `algo` | 数据库用户 |
-| `DB_PASSWORD` | `algo` | 数据库密码 |
-| `TD_HOST` | `tdengine` | **TDengine 主机地址（必填）** |
-| `TD_PORT` | `6041` | TDengine REST API 端口 |
-| `TD_USER` | `root` | TDengine 用户名 |
-| `TD_PASSWORD` | `taosdata` | TDengine 密码 |
-| `TD_DATABASE` | `pet_collar_raw` | TDengine 数据库名 |
-| `TD_SUPERTABLE` | `imu_raw` | IMU 超级表名 |
-| `TD_BATCH_SIZE` | `50000` | 每次拉取最大行数 |
-| `MODEL_PATH` | `weights/behavior_lgbm.pkl` | 模型文件路径 |
-| `IMU_SAMPLE_RATE` | `50` | IMU 采样率（Hz） |
-| `WINDOW_SECONDS` | `3` | 分类滑动窗口时长（秒） |
-| `WINDOW_OVERLAP` | `0.5` | 滑动窗口重叠比例 |
-| `FETCH_INTERVAL_MIN` | `15` | 推理调度间隔（分钟） |
-| `BASELINE_UPDATE_CRON` | `0 2 * * *` | 基线更新 cron（UTC） |
-| `ASSESSMENT_CRON` | `0 3 * * *` | 日评估 cron（UTC） |
-| `PHASE1_THRESHOLD_Z` | `4.0` | 早期阶段 Z-score 阈值 |
-| `PHASE2_THRESHOLD_Z` | `3.5` | 中期阶段 Z-score 阈值 |
-| `PHASE3_THRESHOLD_Z` | `2.5` | 稳定阶段 Z-score 阈值 |
-| `BASELINE_STD_FLOOR` | `2.0` | 基线标准差下限（防除零） |
-| `MIN_WEAR_MINUTES` | `480` | 每天最少佩戴时长（分钟） |
+详见 [docs/configuration.md](docs/configuration.md)。
 
 ---
 
 ## 测试模块
 
-### test_1_inference.py — 行为识别
-
-```bash
-python tests/test_1_inference.py
-```
-
-- 生成 5 场景 × 180 天合成 IMU 数据，保存至 `tests/data/`
-- 用 S1/S2/S3 训练 LightGBM，对全部 5 场景评估（含 S4/S5 未见场景）
-- 输出准确率、分类报告、混淆矩阵、抓挠 F1
-- **再次运行直接加载 CSV，不重新生成**
-
-### test_2_assessment.py — 皮肤健康评估
-
-```bash
-python tests/test_2_assessment.py
-```
-
-5 个场景验证评估逻辑：
-
-| 场景 | 内容 | 预期 |
-|------|------|------|
-| A 正常 | 无疾病 | 0 告警 |
-| B 皮肤病 | 第 45–75 天发病（+10 抓挠） | ≥1 告警，恢复后消除 |
-| C 季节性 | 夏季温度升高 | 0 误报（温度修正生效） |
-| D 缓慢增加 | 抓挠 180 天线性增加 | 基线跟随，≤1 告警 |
-| E 数据缺口 | 多段设备离线 + 疾病期 | 无缺口误报 |
-
-输出诊断表格 + 折线图 `tests/test_2_assessment.png`
-
-### test_3_baseline.py — 基线更新
-
-```bash
-python tests/test_3_baseline.py
-```
-
-| 子测试 | 验证内容 | 通过条件 |
-|--------|----------|----------|
-| T1 正常收敛 | 90 天正常数据 | 最终误差 < 1.0 |
-| T2 异常渗透 | 30 天疾病期 | 基线偏移 < 3.0 |
-| T3 温度系数 | 120 天温度相关 | 系数误差 < 0.08 |
-| T4 阶段转换 | 180 天完整周期 | 置信度达到 1.0，均值误差 < 1.5 |
-
-输出 PASS/FAIL + 图表 `tests/test_3_baseline.png`
+详见 [tests/README.md](tests/README.md)。
 
 ---
 
