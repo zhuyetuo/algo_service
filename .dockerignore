@@ -1,0 +1,23 @@
+# 版本控制
+.git
+.gitignore
+
+# 测试生成的大文件
+tests/data/
+tests/*.png
+train/data/
+weights/*.pkl
+
+# 日志
+logs/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# 开发环境
+.env
+.venv
+venv/
