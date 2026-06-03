@@ -23,7 +23,7 @@ from loguru import logger
 
 from config import settings
 from db.client import AsyncSessionLocal
-from db.tdengine import td_get_devices, td_fetch
+from db.tdengine import td_get_devices, td_fetch, td_fetch_env, td_fetch_neck_temp
 from modules.baseline.updater import run_baseline_update
 from modules.assessment.evaluator import run_batch_assessment, assess_device
 from modules.inference.model import BehaviorLabel, get_classifier
@@ -210,6 +210,106 @@ async def _process_day(clf, device_sn: str, day_ts: int,
             await assess_device(db, device_sn, day_ts)
 
 
+async def _sync_env_for_device(device_sn: str) -> None:
+    """
+    从 TDengine 拉取环境（env_temp/env_humi）和颈部体温（neck_temp）数据，
+    按天聚合后写入 pet_dog_environment.{device_sn}。
+    """
+    # 读取两个数据源各自的断点
+    async with AsyncSessionLocal() as db:
+        row = (await db.execute(text("""
+            SELECT last_env_ts, last_neck_temp_ts
+            FROM device_sync_state WHERE device_sn = :sn
+        """), {"sn": device_sn})).fetchone()
+    last_env_ts       = int(row.last_env_ts)       if row else 0
+    last_neck_temp_ts = int(row.last_neck_temp_ts) if row else 0
+
+    # ── 拉取环境数据 ─────────────────────────────────────────────────────
+    env_rows = await asyncio.to_thread(td_fetch_env, device_sn, last_env_ts)
+    neck_rows = await asyncio.to_thread(td_fetch_neck_temp, device_sn, last_neck_temp_ts)
+
+    if not env_rows and not neck_rows:
+        return
+
+    # 按 UTC 日期零点聚合：每天取均值
+    def _group_by_day(rows, value_keys):
+        groups: dict[int, dict[str, list]] = {}
+        for r in rows:
+            day = (r["ts_ms"] // 86_400_000) * 86_400_000
+            if day not in groups:
+                groups[day] = {k: [] for k in value_keys}
+            for k in value_keys:
+                if r.get(k) is not None:
+                    groups[day][k].append(r[k])
+        return groups
+
+    env_by_day   = _group_by_day(env_rows,  ["env_temp", "env_humi"])
+    neck_by_day  = _group_by_day(neck_rows, ["neck_temp"])
+
+    all_days = set(env_by_day) | set(neck_by_day)
+    if not all_days:
+        return
+
+    now_ms = int(time.time() * 1000)
+
+    async with AsyncSessionLocal() as db:
+        # 确保环境表存在
+        await db.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.pg_schema_environment}.{device_sn} (
+                ts              bigint PRIMARY KEY,
+                env_temp        decimal(5,2),
+                env_humidity    decimal(5,1),
+                neck_temp       decimal(5,2),
+                created_at      bigint NOT NULL,
+                updated_at      bigint NOT NULL
+            )
+        """))
+        await db.commit()
+
+        for day_ts in sorted(all_days):
+            env_d  = env_by_day.get(day_ts,  {})
+            neck_d = neck_by_day.get(day_ts, {})
+
+            avg_env_temp  = round(sum(env_d.get("env_temp", [])) / len(env_d["env_temp"]), 2)  \
+                            if env_d.get("env_temp") else None
+            avg_env_humi  = round(sum(env_d.get("env_humi", [])) / len(env_d["env_humi"]), 1)  \
+                            if env_d.get("env_humi") else None
+            avg_neck_temp = round(sum(neck_d.get("neck_temp", [])) / len(neck_d["neck_temp"]), 2) \
+                            if neck_d.get("neck_temp") else None
+
+            await db.execute(text(f"""
+                INSERT INTO {settings.pg_schema_environment}.{device_sn}
+                    (ts, env_temp, env_humidity, neck_temp, created_at, updated_at)
+                VALUES
+                    (:ts, :env_temp, :env_humi, :neck_temp, :now, :now)
+                ON CONFLICT (ts) DO UPDATE SET
+                    env_temp     = COALESCE(EXCLUDED.env_temp,    {settings.pg_schema_environment}.{device_sn}.env_temp),
+                    env_humidity = COALESCE(EXCLUDED.env_humidity, {settings.pg_schema_environment}.{device_sn}.env_humidity),
+                    neck_temp    = COALESCE(EXCLUDED.neck_temp,   {settings.pg_schema_environment}.{device_sn}.neck_temp),
+                    updated_at   = EXCLUDED.updated_at
+            """), {"ts": day_ts, "env_temp": avg_env_temp,
+                   "env_humi": avg_env_humi, "neck_temp": avg_neck_temp, "now": now_ms})
+        await db.commit()
+
+    # 推进断点
+    now_ms = int(time.time() * 1000)
+    async with AsyncSessionLocal() as db:
+        updates = {}
+        if env_rows:
+            updates["last_env_ts"] = max(r["ts_ms"] for r in env_rows)
+        if neck_rows:
+            updates["last_neck_temp_ts"] = max(r["ts_ms"] for r in neck_rows)
+        for col, val in updates.items():
+            await db.execute(text(f"""
+                UPDATE device_sync_state SET {col} = :val, updated_at = :now
+                WHERE device_sn = :sn
+            """), {"val": val, "now": now_ms, "sn": device_sn})
+        await db.commit()
+
+    logger.info("环境数据同步 设备={} env={} 条 neck_temp={} 条 天数={}",
+                device_sn, len(env_rows), len(neck_rows), len(all_days))
+
+
 # ---------------------------------------------------------------------------
 # 推理周期
 # ---------------------------------------------------------------------------
@@ -261,7 +361,14 @@ async def run_inference_cycle() -> None:
             """), {"sn": sn, "now": now_ms})
         await db.commit()
 
-    # ── 3. 逐设备处理新数据 ──────────────────────────────────────────────
+    # ── 3. 逐设备同步环境 + 颈温数据 ────────────────────────────────────
+    for device_sn in devices:
+        try:
+            await _sync_env_for_device(device_sn)
+        except Exception:
+            logger.exception("设备 {} 环境数据同步失败", device_sn)
+
+    # ── 4. 逐设备处理 IMU 新数据 ─────────────────────────────────────────
     for device_sn in devices:
         try:
             async with AsyncSessionLocal() as db:

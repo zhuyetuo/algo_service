@@ -375,13 +375,14 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
     """))
     await db.commit()  # DDL must be committed before reads on this table
 
-    avg_temp_sql = text(f"""
-        SELECT avg_temperature FROM {settings.pg_schema_assessment}.{device_sn}
-        WHERE stat_date_ts = :ts
+    # 从环境表读取当天颈部体温（由 env sync 预先写入）
+    neck_temp_sql = text(f"""
+        SELECT neck_temp FROM {settings.pg_schema_environment}.{device_sn}
+        WHERE ts = :ts
     """)
     try:
-        existing = (await db.execute(avg_temp_sql, {"ts": stat_date_ts})).fetchone()
-        avg_temperature = float(existing.avg_temperature) if existing and existing.avg_temperature else None
+        neck_row = (await db.execute(neck_temp_sql, {"ts": stat_date_ts})).fetchone()
+        avg_temperature = float(neck_row.neck_temp) if neck_row and neck_row.neck_temp else None
     except Exception:
         await db.rollback()
         avg_temperature = None
