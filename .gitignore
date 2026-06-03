@@ -219,6 +219,7 @@ __marimo__/
 
 # Test-generated data & model weights (large CSV / pickle files)
 tests/data/
+!tests/data/README.md
 tests/*.png
 weights/*.pkl
 
