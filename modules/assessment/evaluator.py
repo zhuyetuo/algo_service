@@ -246,46 +246,18 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
 
         wpeb_score += intensity_weight * duration_weight
 
-    # ── 3. 读取 WEAR 状态（优先读 device_wear_state 表，失败则 fallback） ─────
-    worn_normal_ms = 0
+    # ── 3. 从行为表估算佩戴时长 ──────────────────────────────────────────
+    wear_sql = text(f"""
+        SELECT COALESCE(SUM(ts_end - ts_start), 0) AS wore_ms
+        FROM   {settings.pg_schema_behavior}.{device_sn}
+        WHERE  ts_start >= :day_start
+          AND  ts_start  < :day_end
+    """)
+    wore_ms = (await db.execute(wear_sql, {
+        "day_start": stat_date_ts, "day_end": day_end_ts,
+    })).scalar() or 0
+    wear_minutes = int(wore_ms / 60_000)
     worn_loose_minutes = 0.0
-
-    try:
-        # device_wear_state 为统一表，保留 device_sn 过滤
-        wear_state_sql = text("""
-            SELECT start_time, end_time, wear_state
-            FROM   device_wear_state
-            WHERE  device_sn   = :sn
-              AND  start_time >= :day_start
-              AND  start_time  < :day_end
-        """)
-        wear_rows = (await db.execute(wear_state_sql, {
-            "sn": device_sn, "day_start": stat_date_ts, "day_end": day_end_ts,
-        })).fetchall()
-
-        for wr in wear_rows:
-            duration = wr.end_time - wr.start_time
-            if wr.wear_state == "WORN_NORMAL":
-                worn_normal_ms += duration
-            elif wr.wear_state == "WORN_LOOSE":
-                worn_loose_minutes += duration / 60_000.0
-
-        wear_minutes = int(worn_normal_ms / 60_000)
-    except Exception:
-        # device_wear_state 表不存在时，事务已进入 aborted 状态，需先回滚再执行 fallback
-        await db.rollback()
-        logger.debug("device_wear_state 表不可访问，使用行为记录时长 fallback")
-        wear_sql = text(f"""
-            SELECT COALESCE(SUM(ts_end - ts_start), 0) AS wore_ms
-            FROM   {settings.pg_schema_behavior}.{device_sn}
-            WHERE  ts_start >= :day_start
-              AND  ts_start  < :day_end
-        """)
-        wore_ms = (await db.execute(wear_sql, {
-            "day_start": stat_date_ts, "day_end": day_end_ts,
-        })).scalar() or 0
-        wear_minutes = int(wore_ms / 60_000)
-        worn_loose_minutes = 0.0
 
     # 佩戴时长低于阈值则标记为无效天
     data_quality = 0
