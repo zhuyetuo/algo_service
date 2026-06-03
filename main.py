@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning, module="sklearn")
+
 from contextlib import asynccontextmanager
 
 import httpx
