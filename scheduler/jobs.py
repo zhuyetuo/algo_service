@@ -29,12 +29,24 @@ from modules.assessment.evaluator import run_batch_assessment, assess_device
 from modules.inference.model import BehaviorLabel, get_classifier
 
 _scheduler = BackgroundScheduler()
+_main_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _run(coro_fn, *args, **kwargs):
-    """从同步的 APScheduler 线程中运行异步函数。"""
+    """从同步的 APScheduler 线程中运行异步函数。
+
+    必须在主事件循环上执行（asyncpg 连接池绑定到该循环），
+    不能用 asyncio.run() 新建循环。
+    """
     def wrapper():
-        asyncio.run(coro_fn(*args, **kwargs))
+        if _main_loop is None:
+            logger.error("主事件循环未初始化，跳过任务 {}", coro_fn.__name__)
+            return
+        future = asyncio.run_coroutine_threadsafe(coro_fn(*args, **kwargs), _main_loop)
+        try:
+            future.result()
+        except Exception:
+            logger.exception("调度任务 {} 抛出异常", coro_fn.__name__)
     return wrapper
 
 
@@ -43,6 +55,8 @@ def _run(coro_fn, *args, **kwargs):
 # ---------------------------------------------------------------------------
 
 def start_scheduler():
+    global _main_loop
+    _main_loop = asyncio.get_event_loop()
     _scheduler.add_job(
         _run(run_inference_cycle),
         IntervalTrigger(minutes=settings.fetch_interval_min),
