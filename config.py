@@ -83,8 +83,8 @@ class Settings(BaseSettings):
     td_port: int = 6041
     td_user: str = "root"
     td_password: str = "taosdata"
-    td_database: str = "hiccpet_device"
-    td_supertable: str = "imu_data"
+    td_database: str = "pet_collar_raw"
+    td_supertable: str = "imu_raw"
     # 每次从 TDengine 单设备拉取的最大行数
     td_batch_size: int = 50000
 
