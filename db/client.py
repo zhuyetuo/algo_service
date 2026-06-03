@@ -34,6 +34,20 @@ async def init_db():
                 updated_at        bigint
             )
         """))
+        # 记录推理失败的任务，用于重试和事后分析
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS processing_errors (
+                id          bigserial   PRIMARY KEY,
+                device_sn   varchar(64) NOT NULL,
+                day_ts      bigint      NOT NULL,
+                error_msg   text        NOT NULL,
+                retry_count int         NOT NULL DEFAULT 0,
+                status      varchar(16) NOT NULL DEFAULT 'pending',
+                created_at  bigint      NOT NULL,
+                updated_at  bigint      NOT NULL,
+                UNIQUE (device_sn, day_ts)
+            )
+        """))
 
 
 async def close_db():

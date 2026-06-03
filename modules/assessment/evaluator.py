@@ -302,6 +302,7 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
     try:
         bl = (await db.execute(bl_sql, {"sn": device_sn})).fetchone()
     except Exception:
+        await db.rollback()
         bl = None
 
     if bl is None:
@@ -372,6 +373,7 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
             updated_at         bigint         NOT NULL
         )
     """))
+    await db.commit()  # DDL must be committed before reads on this table
 
     avg_temp_sql = text(f"""
         SELECT avg_temperature FROM {settings.pg_schema_assessment}.{device_sn}
@@ -381,6 +383,7 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
         existing = (await db.execute(avg_temp_sql, {"ts": stat_date_ts})).fetchone()
         avg_temperature = float(existing.avg_temperature) if existing and existing.avg_temperature else None
     except Exception:
+        await db.rollback()
         avg_temperature = None
 
     # ── 6. Z-score 计算（体温修正在 Z-score 层面进行，原始计数不变） ────────
@@ -407,6 +410,7 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
             prev_consec_row = (await db.execute(prev_consec_sql, {"ts": stat_date_ts})).fetchone()
             consec_abnormal = int(prev_consec_row.consec_abnormal) if prev_consec_row else 0
         except Exception:
+            await db.rollback()
             consec_abnormal = 0
 
     elif thresh is not None:
@@ -475,6 +479,7 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
         })).fetchone()
         night_sleep_segments = int(seg_row.seg_count) if seg_row else 0
     except Exception:
+        await db.rollback()
         night_sleep_segments = 0
 
     # ── 9. 读取环境数据（从 pet_dog_environment.{device_sn} 读取，用于 S6） ──────────
@@ -491,8 +496,8 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
             env_temp     = float(env_row.env_temp) if env_row.env_temp is not None else None
             env_humidity = float(env_row.env_humidity) if env_row.env_humidity is not None else None
     except Exception:
+        await db.rollback()
         # pet_dog_environment.{device_sn} 表不存在时 S6 为 0
-        pass
 
     # ── 10. 各维度评分 ────────────────────────────────────────────────────────
     s1_score = _calc_s1(zscore if zscore is not None else 0.0)
@@ -510,6 +515,7 @@ async def assess_device(db: AsyncSession, device_sn: str, stat_date_ts: int) -> 
         s5_row = (await db.execute(s5_sql, {"ts": stat_date_ts})).fetchone()
         s5_score = float(s5_row.s5_score) if s5_row and s5_row.s5_score is not None else 0.0
     except Exception:
+        await db.rollback()
         s5_score = 0.0
 
     s6_score = _calc_s6(env_temp, env_humidity)
