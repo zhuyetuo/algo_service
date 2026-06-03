@@ -6,30 +6,29 @@
 
 ---
 
-## 环境准备
-
-```bash
-# 在项目根目录执行
-cd algo_service
-
-# 安装测试依赖（pytest + pytest-asyncio + httpx）
-pip install -r requirements-dev.txt
-
-# 安装项目本体依赖（如未安装）
-pip install -r requirements.txt
-```
-
----
-
 ## 运行方式
+
+### 容器内运行（推荐，依赖已齐全）
 
 ```bash
 # 运行全部单元测试
-python -m pytest tests/unit/
+docker exec -it algo_service python -m pytest tests/unit/ -v
 
-# 显示每个测试名称
+# 遇到第一个失败立即停止
+docker exec -it algo_service python -m pytest tests/unit/ -x
+```
+
+### 宿主机运行（需先安装依赖）
+
+```bash
+cd algo_service
+pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest tests/unit/ -v
+```
 
+### 常用过滤
+
+```bash
 # 只运行某一文件
 python -m pytest tests/unit/test_evaluator_scoring.py -v
 
@@ -38,9 +37,6 @@ python -m pytest tests/unit/test_evaluator_scoring.py::TestCalcS1 -v
 
 # 只运行某一测试用例
 python -m pytest tests/unit/test_inference_model.py::TestExtractFeatures::test_feature_count -v
-
-# 遇到第一个失败立即停止
-python -m pytest tests/unit/ -x
 ```
 
 ---
