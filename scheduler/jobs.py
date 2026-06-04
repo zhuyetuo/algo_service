@@ -161,9 +161,13 @@ async def _retry_pending(clf, today_ts: int) -> None:
             await _record_failure(device_sn, day_ts, e)
 
 
-async def _process_day(clf, device_sn: str, day_ts: int,
-                       day_rows: list[dict], today_ts: int) -> None:
-    """对单天数据执行推理并写入行为表，供正常流程和重试共用。"""
+async def _write_behavior(clf, device_sn: str, day_ts: int,
+                          day_rows: list[dict]) -> int:
+    """对一批 IMU 数据执行推理并将行为事件写入行为表，返回写入的事件数。
+
+    同一天可能跨多个批次调用，每次追加写入，不做评估。
+    ts_start 上的唯一约束保证重叠窗口不会产生重复行。
+    """
     day_rows_sorted = sorted(day_rows, key=lambda r: r["ts_ms"])
     base_ts_ms = day_rows_sorted[0]["ts_ms"]
 
@@ -178,13 +182,14 @@ async def _process_day(clf, device_sn: str, day_ts: int,
         await db.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {settings.pg_schema_behavior}.{device_sn} (
                 id           bigserial PRIMARY KEY,
-                ts_start     bigint        NOT NULL,
+                ts_start     bigint        NOT NULL UNIQUE,
                 ts_end       bigint        NOT NULL,
                 behavior     smallint      NOT NULL,
                 duration_sec decimal(10,2) NOT NULL,
                 confidence   decimal(5,3)  NOT NULL
             )
         """))
+        await db.commit()
         for ev in events:
             btype = int(ev["behavior_type"])
             dur_sec = round((ev["end_time"] - ev["start_time"]) / 1000.0, 2)
@@ -193,7 +198,7 @@ async def _process_day(clf, device_sn: str, day_ts: int,
                     (ts_start, ts_end, behavior, duration_sec, confidence)
                 VALUES
                     (:ts_start, :ts_end, :behavior, :duration_sec, :confidence)
-                ON CONFLICT DO NOTHING
+                ON CONFLICT (ts_start) DO NOTHING
             """), {
                 "ts_start":     ev["start_time"],
                 "ts_end":       ev["end_time"],
@@ -203,8 +208,14 @@ async def _process_day(clf, device_sn: str, day_ts: int,
             })
         await db.commit()
 
-    logger.info("设备={} 日期={} 事件数={}", device_sn, day_ts, len(events))
+    return len(events)
 
+
+async def _process_day(clf, device_sn: str, day_ts: int,
+                       day_rows: list[dict], today_ts: int) -> None:
+    """写入行为事件并立即评估，专供重试逻辑使用（该天数据已完整）。"""
+    event_count = await _write_behavior(clf, device_sn, day_ts, day_rows)
+    logger.info("设备={} 日期={} 事件数={}", device_sn, day_ts, event_count)
     if day_ts < today_ts:
         async with AsyncSessionLocal() as db:
             await assess_device(db, device_sn, day_ts)
@@ -392,34 +403,61 @@ async def run_inference_cycle() -> None:
 
             any_data = False
             failed = False
+            # 已写入行为事件但尚未评估的日期集合（等到下一批确认该天数据已完整再评估）
+            pending_assess: set[int] = set()
 
-            # 循环拉取直到追上所有历史数据（每批 td_batch_size 行）
             while not failed:
                 imu_rows = await asyncio.to_thread(td_fetch, device_sn, last_ts)
+
                 if not imu_rows:
                     if not any_data:
                         logger.info("设备 {} 数据无更新，跳过本次推理", device_sn)
+                    # 所有数据已拉完，对剩余待评估天做最终评估
+                    for day_ts in sorted(pending_assess):
+                        if day_ts < today_ts:
+                            try:
+                                async with AsyncSessionLocal() as db:
+                                    await assess_device(db, device_sn, day_ts)
+                                await _mark_success(device_sn, day_ts)
+                            except Exception as e:
+                                logger.exception("设备 {} 日期 {} 评估失败", device_sn, day_ts)
+                                await _record_failure(device_sn, day_ts, e)
                     break
+
                 any_data = True
 
-                # 按 UTC 日期零点分组
+                # 本批次最早时间戳所在的日：此日之前的所有天数据已确认完整，可评估
+                batch_min_day = (min(r["ts_ms"] for r in imu_rows) // 86_400_000) * 86_400_000
+                for day_ts in sorted(list(pending_assess)):
+                    if day_ts < batch_min_day:
+                        if day_ts < today_ts:
+                            try:
+                                async with AsyncSessionLocal() as db:
+                                    await assess_device(db, device_sn, day_ts)
+                                await _mark_success(device_sn, day_ts)
+                            except Exception as e:
+                                logger.exception("设备 {} 日期 {} 评估失败", device_sn, day_ts)
+                                await _record_failure(device_sn, day_ts, e)
+                        pending_assess.discard(day_ts)
+
+                # 按 UTC 日期零点分组，写入行为事件
                 day_groups: dict[int, list[dict]] = {}
                 for r in imu_rows:
                     day_key = (r["ts_ms"] // 86_400_000) * 86_400_000
                     day_groups.setdefault(day_key, []).append(r)
 
-                # 逐天处理，遇到失败记录后停止（保证 last_processed_ts 连续推进）
                 max_ts = last_ts
                 for day_ts, day_rows in sorted(day_groups.items()):
                     try:
-                        await _process_day(clf, device_sn, day_ts, day_rows, today_ts)
-                        await _mark_success(device_sn, day_ts)
+                        event_count = await _write_behavior(clf, device_sn, day_ts, day_rows)
+                        logger.info("设备={} 日期={} 事件数={}", device_sn, day_ts, event_count)
+                        pending_assess.add(day_ts)
                         max_ts = max(r["ts_ms"] for r in day_rows)
                     except Exception as e:
                         logger.exception("设备 {} 日期 {} 推理失败，已记录待重试", device_sn, day_ts)
                         await _record_failure(device_sn, day_ts, e)
                         failed = True
-                        break  # 保证时序连续，下次从这天重试
+                        break
 
                 # 推进断点，供下一批次使用
                 if max_ts > last_ts:
@@ -433,7 +471,6 @@ async def run_inference_cycle() -> None:
                         """), {"ts": max_ts, "now": now_ms, "sn": device_sn})
                         await db.commit()
                 elif not failed:
-                    # 本批次没有新的进展（全部当天数据，或无可推进），退出循环
                     break
 
         except Exception:
