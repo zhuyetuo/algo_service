@@ -622,7 +622,6 @@ async def run_batch_assessment(stat_date_ts: int | None = None) -> None:
     若为 None，则使用当前 UTC 零点（适用于单时区部署）。
     """
     if stat_date_ts is None:
-        # 默认使用当前 UTC 日期零点
         now = int(time.time())
         stat_date_ts = (now // 86400) * 86400 * 1000
 

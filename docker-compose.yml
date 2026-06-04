@@ -32,3 +32,5 @@ services:
     volumes:
       - ./weights:/app/weights
       - ./logs:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
