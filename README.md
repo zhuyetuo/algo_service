@@ -29,6 +29,9 @@ curl http://localhost:8000/health
 # 查看日志
 docker logs algo_service -f
 
+# 清空容器内滚动日志文件（不重启服务）
+docker exec algo_service sh -c "rm -f /app/logs/algo_service*.log /app/logs/algo_service*.log.zip"
+
 # 停止服务
 docker compose stop
 
