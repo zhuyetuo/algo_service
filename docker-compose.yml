@@ -6,6 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: algo_service
+    user: "${UID}:${GID}"
     restart: unless-stopped
     ports:
       - "8000:8000"
