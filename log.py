@@ -52,3 +52,7 @@ def setup_logging() -> None:
     for name in logging.root.manager.loggerDict:
         logging.getLogger(name).handlers = [_InterceptHandler()]
         logging.getLogger(name).propagate = False
+
+    # 屏蔽第三方库的 DEBUG 噪音
+    for noisy in ("urllib3", "urllib3.connectionpool", "httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
