@@ -9,7 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p logs
+RUN mkdir -p logs && chmod 777 logs
 
 EXPOSE 8000
 
