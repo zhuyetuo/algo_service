@@ -8,7 +8,6 @@ from config import settings
 
 
 def _get_conn() -> taosrest.TaosRestConnection:
-    """创建并返回 TDengine REST 连接（HTTP，端口 6041）。"""
     return taosrest.connect(
         url=f"http://{settings.td_host}:{settings.td_port}",
         user=settings.td_user,
@@ -17,12 +16,10 @@ def _get_conn() -> taosrest.TaosRestConnection:
 
 
 def _table() -> str:
-    """返回全限定超级表名，避免 taosrest 不传 database 参数的问题。"""
     return f"{settings.td_database}.{settings.td_supertable}"
 
 
 def _ts_to_ms(ts) -> int:
-    """将 TDengine 返回的 ts 字段转换为 UTC 毫秒时间戳。"""
     if isinstance(ts, int):
         return ts
     if isinstance(ts, datetime.datetime):
@@ -32,26 +29,20 @@ def _ts_to_ms(ts) -> int:
     return int(ts)
 
 
-def td_get_devices() -> list[str]:
-    """
-    查询超级表中所有设备的 device_sn 列表。
-    用于初始化 device_sync_state。
-    """
+def td_get_devices() -> list[int]:
+    """查询超级表中所有设备的 device_id 列表（调试用）。"""
     conn = _get_conn()
     try:
         cursor = conn.cursor()
-        cursor.execute(f"SELECT DISTINCT device_sn FROM {_table()}")
+        cursor.execute(f"SELECT DISTINCT device_id FROM {_table()}")
         rows = cursor.fetchall()
-        return [str(r[0]).strip() for r in rows]
+        return [int(r[0]) for r in rows]
     finally:
         conn.close()
 
 
-def td_fetch_env(device_sn: str, last_ts_ms: int) -> list[dict]:
-    """
-    从 env_raw 拉取指定设备在 last_ts_ms 之后的环境数据。
-    返回包含 ts_ms / env_temp / env_humi 的字典列表。
-    """
+def td_fetch_env(device_id: int, last_ts_ms: int) -> list[dict]:
+    """从 env_raw 拉取指定设备在 last_ts_ms 之后的环境数据。"""
     conn = _get_conn()
     try:
         cursor = conn.cursor()
@@ -59,7 +50,7 @@ def td_fetch_env(device_sn: str, last_ts_ms: int) -> list[dict]:
         cursor.execute(f"""
             SELECT ts, env_temp, env_humi
             FROM {table}
-            WHERE device_sn = '{device_sn}'
+            WHERE device_id = {device_id}
               AND ts > {last_ts_ms}
             ORDER BY ts
             LIMIT {settings.td_batch_size}
@@ -77,11 +68,8 @@ def td_fetch_env(device_sn: str, last_ts_ms: int) -> list[dict]:
         conn.close()
 
 
-def td_fetch_neck_temp(device_sn: str, last_ts_ms: int) -> list[dict]:
-    """
-    从 neck_temp_raw 拉取指定设备在 last_ts_ms 之后的颈部体温数据。
-    返回包含 ts_ms / neck_temp 的字典列表。
-    """
+def td_fetch_neck_temp(device_id: int, last_ts_ms: int) -> list[dict]:
+    """从 neck_temp_raw 拉取指定设备在 last_ts_ms 之后的颈部体温数据。"""
     conn = _get_conn()
     try:
         cursor = conn.cursor()
@@ -89,7 +77,7 @@ def td_fetch_neck_temp(device_sn: str, last_ts_ms: int) -> list[dict]:
         cursor.execute(f"""
             SELECT ts, neck_temp
             FROM {table}
-            WHERE device_sn = '{device_sn}'
+            WHERE device_id = {device_id}
               AND ts > {last_ts_ms}
             ORDER BY ts
             LIMIT {settings.td_batch_size}
@@ -106,20 +94,15 @@ def td_fetch_neck_temp(device_sn: str, last_ts_ms: int) -> list[dict]:
         conn.close()
 
 
-def td_fetch(device_sn: str, last_ts_ms: int) -> list[dict]:
-    """
-    从 TDengine 拉取指定设备在 last_ts_ms 之后的新 IMU 数据。
-    返回列表，每个元素为包含 ts_ms 和 6 轴数据的字典。
-    无新数据时返回空列表。
-    """
+def td_fetch(device_id: int, last_ts_ms: int) -> list[dict]:
+    """从 TDengine 拉取指定设备在 last_ts_ms 之后的新 IMU 数据。"""
     conn = _get_conn()
     try:
         cursor = conn.cursor()
-        # 使用超级表按 device_sn tag 过滤，效率等同于直接查子表
         cursor.execute(f"""
             SELECT ts, ax, ay, az, gx, gy, gz
             FROM {_table()}
-            WHERE device_sn = '{device_sn}'
+            WHERE device_id = {device_id}
               AND ts > {last_ts_ms}
             ORDER BY ts
             LIMIT {settings.td_batch_size}
