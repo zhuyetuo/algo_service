@@ -28,10 +28,12 @@ async def _update_one(device_sn: str) -> None:
     async with AsyncSessionLocal() as db:
         # 从 pet_dog_skin_assessment.{device_sn} 拉取过去30天有效天的数据（data_quality=0）
         rows_sql = text(f"""
-            SELECT scratch_count, avg_temperature, zscore, wpeb_score
-            FROM   {settings.pg_schema_assessment}.{device_sn}
-            WHERE  data_quality = 0
-            ORDER BY stat_date_ts DESC
+            SELECT a.scratch_count, a.zscore, a.wpeb_score,
+                   e.neck_temp AS avg_temperature
+            FROM   {settings.pg_schema_assessment}.{device_sn} a
+            LEFT JOIN {settings.pg_schema_environment}.{device_sn} e ON e.ts = a.stat_date_ts
+            WHERE  a.data_quality = 0
+            ORDER BY a.stat_date_ts DESC
             LIMIT 30
         """)
         rows = (await db.execute(rows_sql)).fetchall()
@@ -49,6 +51,7 @@ async def _update_one(device_sn: str) -> None:
         try:
             bl = (await db.execute(bl_sql, {"sn": device_sn})).fetchone()
         except Exception:
+            await db.rollback()
             bl = None
 
         if bl:
