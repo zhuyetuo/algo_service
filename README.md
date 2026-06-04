@@ -31,8 +31,8 @@ docker logs algo_service -f
 
 # 清空日志文件（服务运行中，不重启）
 docker exec algo_service sh -c "rm -f /app/logs/algo_service*.log /app/logs/algo_service*.log.zip"
-# 清空日志文件（服务停止时，直接删宿主机目录）
-rm -f logs/algo_service*.log logs/algo_service*.log.zip
+# 清空日志文件（服务停止时，直接删宿主机目录，需 sudo）
+sudo rm -f logs/algo_service*.log logs/algo_service*.log.zip
 
 # 停止服务
 docker compose stop
