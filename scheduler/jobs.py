@@ -359,8 +359,8 @@ async def run_inference_cycle() -> None:
         try:
             bindings = (await db.execute(text("""
                 SELECT dbh.device_id, dbh.user_id, COALESCE(u.timezone, 'UTC') AS timezone
-                FROM device_bind_history dbh
-                JOIN "user" u ON dbh.user_id = u.id
+                FROM pet_device.device_bind_history dbh
+                JOIN pet_device."user" u ON dbh.user_id = u.id
                 WHERE dbh.bind_status = 1
             """))).fetchall()
         except Exception:
