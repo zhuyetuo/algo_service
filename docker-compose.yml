@@ -11,6 +11,7 @@ services:
     ports:
       - "8000:8000"
     environment:
+      - TZ=Asia/Shanghai
       - DB_HOST=${DB_HOST:-host.docker.internal}
       - DB_PORT=${DB_PORT:-5432}
       - DB_NAME=${DB_NAME:-pet_collar}
