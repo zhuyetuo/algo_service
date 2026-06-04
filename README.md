@@ -12,8 +12,11 @@
 # 1. 拉取代码
 git clone <repo> && cd algo_service
 
-# 2. 配置（默认值已对齐本地环境，通常无需改动）
+# 2. 配置
 cp .env.example .env
+# 编辑 .env，将 UID/GID 改为当前用户的值（让日志文件归属当前用户，无需 sudo 删除）
+echo "UID=$(id -u)" >> .env
+echo "GID=$(id -g)" >> .env
 
 # 3. 训练模型（首次运行约 20-25 秒，生成 weights/behavior_lgbm.pkl）
 python train/train.py
@@ -29,10 +32,10 @@ curl http://localhost:8000/health
 # 查看日志
 docker logs algo_service -f
 
-# 清空日志文件（服务运行中，不重启）
-docker exec algo_service sh -c "rm -f /app/logs/algo_service*.log /app/logs/algo_service*.log.zip"
-# 清空日志文件（服务停止时，直接删宿主机目录）
+# 清空日志（先停容器，删完再启动）
+docker compose down
 rm -f logs/algo_service*.log logs/algo_service*.log.zip
+docker compose up -d
 
 # 停止服务
 docker compose stop
