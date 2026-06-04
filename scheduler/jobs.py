@@ -356,12 +356,25 @@ async def run_inference_cycle() -> None:
 
     # ── 1. 同步活跃设备绑定关系和用户时区 ────────────────────────────────
     async with AsyncSessionLocal() as db:
-        bindings = (await db.execute(text("""
-            SELECT dbh.device_id, dbh.user_id, COALESCE(u.timezone, 'UTC') AS timezone
-            FROM device_bind_history dbh
-            JOIN "user" u ON dbh.user_id = u.id
-            WHERE dbh.bind_status = 1
-        """))).fetchall()
+        try:
+            bindings = (await db.execute(text("""
+                SELECT dbh.device_id, dbh.user_id, COALESCE(u.timezone, 'UTC') AS timezone
+                FROM device_bind_history dbh
+                JOIN "user" u ON dbh.user_id = u.id
+                WHERE dbh.bind_status = 1
+            """))).fetchall()
+        except Exception:
+            await db.rollback()
+            logger.warning("device_bind_history 不可用，从 device_sync_state 读取已知设备")
+            bindings = None
+
+    if bindings is None:
+        # fallback：使用 device_sync_state 中已知的设备和时区
+        async with AsyncSessionLocal() as db:
+            rows = (await db.execute(text(
+                "SELECT device_id, user_id, user_timezone AS timezone FROM device_sync_state"
+            ))).fetchall()
+        bindings = rows
 
     if not bindings:
         logger.info("暂无活跃设备绑定，跳过本次推理周期")
