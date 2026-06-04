@@ -9,7 +9,7 @@
 - 每天执行（由调度器 cron 驱动）
 - 使用过去30天的有效天数重新计算标准差和温度系数
 - 同步更新 wpeb_mean 和 wpeb_std 的 EWMA
-- 数据来源：pet_dog_skin_assessment.{device_sn}（每设备独立表），基线写入 pet_dog_scratch_baseline.pet_skin_baseline
+- 数据来源：pet_dog_skin_assessment.d_{device_id}（每设备独立表），基线写入 pet_dog_scratch_baseline.pet_skin_baseline
 - 设备列表来源：device_sync_state（统一表）
 """
 
@@ -24,32 +24,39 @@ from config import settings
 from db.client import AsyncSessionLocal
 
 
-async def _update_one(device_sn: str) -> None:
+async def _update_one(device_id: int) -> None:
     async with AsyncSessionLocal() as db:
-        # 从 pet_dog_skin_assessment.{device_sn} 拉取过去30天有效天的数据（data_quality=0）
+        a_tbl = f"{settings.pg_schema_assessment}.d_{device_id}"
+        e_tbl = f"{settings.pg_schema_environment}.d_{device_id}"
+
+        # 从 pet_dog_skin_assessment.d_{device_id} 拉取过去30天有效天的数据（data_quality=0）
         rows_sql = text(f"""
             SELECT a.scratch_count, a.zscore, a.wpeb_score,
                    e.neck_temp AS avg_temperature
-            FROM   {settings.pg_schema_assessment}.{device_sn} a
-            LEFT JOIN {settings.pg_schema_environment}.{device_sn} e ON e.ts = a.stat_date_ts
+            FROM   {a_tbl} a
+            LEFT JOIN {e_tbl} e ON e.ts = a.stat_date_ts
             WHERE  a.data_quality = 0
             ORDER BY a.stat_date_ts DESC
             LIMIT 30
         """)
-        rows = (await db.execute(rows_sql)).fetchall()
+        try:
+            rows = (await db.execute(rows_sql)).fetchall()
+        except Exception:
+            await db.rollback()
+            return
 
         if not rows:
             return
 
-        # 读取当前基线（pet_dog_scratch_baseline.pet_skin_baseline 按 device_sn 主键的统一表）
+        # 读取当前基线（pet_dog_scratch_baseline.pet_skin_baseline 按 device_id 主键的统一表）
         bl_sql = text(f"""
             SELECT baseline_mean, baseline_std, temp_coef, valid_days,
                    wpeb_mean, wpeb_std
             FROM   {settings.pg_schema_baseline}.pet_skin_baseline
-            WHERE  device_sn = :sn
+            WHERE  device_id = :did
         """)
         try:
-            bl = (await db.execute(bl_sql, {"sn": device_sn})).fetchone()
+            bl = (await db.execute(bl_sql, {"did": device_id})).fetchone()
         except Exception:
             await db.rollback()
             bl = None
@@ -63,7 +70,6 @@ async def _update_one(device_sn: str) -> None:
                 cur_wpeb_mean = float(bl.wpeb_mean) if bl.wpeb_mean is not None else float(rows[0].wpeb_score or 0)
                 cur_wpeb_std  = float(bl.wpeb_std) if bl.wpeb_std is not None else settings.baseline_std_floor_wpeb
             except Exception:
-                # wpeb_mean/wpeb_std 字段可能尚未存在
                 cur_wpeb_mean = float(rows[0].wpeb_score or 0) if rows else 0.0
                 cur_wpeb_std  = settings.baseline_std_floor_wpeb
         else:
@@ -88,12 +94,10 @@ async def _update_one(device_sn: str) -> None:
             else:
                 weight = 0.00    # 明显异常，完全冻结基线
 
-            # 仅在 weight > 0 时更新均值
             if weight > 0:
                 cur_mean = cur_mean * (1 - weight) + count * weight
                 valid_days += 1
 
-            # wpeb_score EWMA 更新（同样采用 Z-score 三档权重）
             wpeb = float(row.wpeb_score) if row.wpeb_score is not None else 0.0
             if weight > 0:
                 cur_wpeb_mean = cur_wpeb_mean * (1 - weight) + wpeb * weight
@@ -139,19 +143,36 @@ async def _update_one(device_sn: str) -> None:
 
         now_ms = int(time.time() * 1000)
 
-        # Upsert 写入基线，包含 wpeb_mean 和 wpeb_std
+        # 确保基线表存在
+        await db.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {settings.pg_schema_baseline}.pet_skin_baseline (
+                device_id        bigint        PRIMARY KEY,
+                baseline_mean    decimal(6,2)  NOT NULL DEFAULT 0,
+                baseline_std     decimal(6,2)  NOT NULL DEFAULT 0,
+                temp_coef        decimal(5,3)  NOT NULL DEFAULT 0,
+                valid_days       int           NOT NULL DEFAULT 0,
+                eval_phase       smallint      NOT NULL DEFAULT 0,
+                confidence       decimal(4,2)  NOT NULL DEFAULT 0,
+                wpeb_mean        decimal(10,4),
+                wpeb_std         decimal(10,4),
+                last_updated_ts  bigint,
+                created_at       bigint        NOT NULL
+            )
+        """))
+        await db.commit()
+
         upsert_sql = text(f"""
             INSERT INTO {settings.pg_schema_baseline}.pet_skin_baseline
-                (device_sn, baseline_mean, baseline_std, temp_coef,
+                (device_id, baseline_mean, baseline_std, temp_coef,
                  valid_days, eval_phase, confidence,
                  wpeb_mean, wpeb_std,
                  last_updated_ts, created_at)
             VALUES
-                (:sn, :mean, :std, :coef,
+                (:did, :mean, :std, :coef,
                  :valid_days, :phase, :confidence,
                  :wpeb_mean, :wpeb_std,
                  :now_ms, :now_ms)
-            ON CONFLICT (device_sn) DO UPDATE SET
+            ON CONFLICT (device_id) DO UPDATE SET
                 baseline_mean    = EXCLUDED.baseline_mean,
                 baseline_std     = EXCLUDED.baseline_std,
                 temp_coef        = EXCLUDED.temp_coef,
@@ -163,7 +184,7 @@ async def _update_one(device_sn: str) -> None:
                 last_updated_ts  = EXCLUDED.last_updated_ts
         """)
         await db.execute(upsert_sql, {
-            "sn":         device_sn,
+            "did":        device_id,
             "mean":       round(cur_mean, 2),
             "std":        round(cur_std, 2),
             "coef":       round(cur_coef, 3),
@@ -179,7 +200,7 @@ async def _update_one(device_sn: str) -> None:
         logger.info(
             "基线更新完成 device={} mean={:.2f} std={:.2f} coef={:.3f} "
             "wpeb_mean={:.4f} wpeb_std={:.4f} valid_days={}",
-            device_sn, cur_mean, cur_std, cur_coef,
+            device_id, cur_mean, cur_std, cur_coef,
             cur_wpeb_mean, cur_wpeb_std, valid_days,
         )
 
@@ -187,14 +208,12 @@ async def _update_one(device_sn: str) -> None:
 async def run_baseline_update() -> None:
     """对所有注册设备更新基线（设备列表从 device_sync_state 统一表获取）。"""
     async with AsyncSessionLocal() as db:
-        # 从 device_sync_state 获取所有设备，替代原来查询 pet_skin_health_daily
-        devices_sql = text(
-            "SELECT device_sn FROM device_sync_state"
-        )
-        devices = (await db.execute(devices_sql)).fetchall()
+        devices = (await db.execute(text(
+            "SELECT device_id FROM device_sync_state"
+        ))).fetchall()
 
     for row in devices:
         try:
-            await _update_one(row.device_sn)
+            await _update_one(int(row.device_id))
         except Exception:
-            logger.exception("基线更新失败 device={}", row.device_sn)
+            logger.exception("基线更新失败 device={}", row.device_id)
