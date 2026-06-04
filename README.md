@@ -14,9 +14,6 @@ git clone <repo> && cd algo_service
 
 # 2. 配置
 cp .env.example .env
-# 编辑 .env，将 UID/GID 改为当前用户的值（让日志文件归属当前用户，无需 sudo 删除）
-echo "UID=$(id -u)" >> .env
-echo "GID=$(id -g)" >> .env
 
 # 3. 训练模型（首次运行约 20-25 秒，生成 weights/behavior_lgbm.pkl）
 python train/train.py
