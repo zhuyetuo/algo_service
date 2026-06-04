@@ -224,14 +224,6 @@ async def _sync_env_for_device(device_sn: str) -> None:
     last_env_ts       = int(row.last_env_ts)       if row else 0
     last_neck_temp_ts = int(row.last_neck_temp_ts) if row else 0
 
-    # ── 拉取环境数据 ─────────────────────────────────────────────────────
-    env_rows = await asyncio.to_thread(td_fetch_env, device_sn, last_env_ts)
-    neck_rows = await asyncio.to_thread(td_fetch_neck_temp, device_sn, last_neck_temp_ts)
-
-    if not env_rows and not neck_rows:
-        logger.info("设备 {} 环境/体温数据无更新，跳过", device_sn)
-        return
-
     # 按 UTC 日期零点聚合：每天取均值
     def _group_by_day(rows, value_keys):
         groups: dict[int, dict[str, list]] = {}
@@ -244,17 +236,8 @@ async def _sync_env_for_device(device_sn: str) -> None:
                     groups[day][k].append(r[k])
         return groups
 
-    env_by_day   = _group_by_day(env_rows,  ["env_temp", "env_humi"])
-    neck_by_day  = _group_by_day(neck_rows, ["neck_temp"])
-
-    all_days = set(env_by_day) | set(neck_by_day)
-    if not all_days:
-        return
-
-    now_ms = int(time.time() * 1000)
-
+    # 确保环境表存在（仅建一次）
     async with AsyncSessionLocal() as db:
-        # 确保环境表存在
         await db.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {settings.pg_schema_environment}.{device_sn} (
                 ts              bigint PRIMARY KEY,
@@ -267,48 +250,77 @@ async def _sync_env_for_device(device_sn: str) -> None:
         """))
         await db.commit()
 
-        for day_ts in sorted(all_days):
-            env_d  = env_by_day.get(day_ts,  {})
-            neck_d = neck_by_day.get(day_ts, {})
+    total_env = total_neck = total_days = 0
 
-            avg_env_temp  = round(sum(env_d.get("env_temp", [])) / len(env_d["env_temp"]), 2)  \
-                            if env_d.get("env_temp") else None
-            avg_env_humi  = round(sum(env_d.get("env_humi", [])) / len(env_d["env_humi"]), 1)  \
-                            if env_d.get("env_humi") else None
-            avg_neck_temp = round(sum(neck_d.get("neck_temp", [])) / len(neck_d["neck_temp"]), 2) \
-                            if neck_d.get("neck_temp") else None
-
-            await db.execute(text(f"""
-                INSERT INTO {settings.pg_schema_environment}.{device_sn}
-                    (ts, env_temp, env_humidity, neck_temp, created_at, updated_at)
-                VALUES
-                    (:ts, :env_temp, :env_humi, :neck_temp, :now, :now)
-                ON CONFLICT (ts) DO UPDATE SET
-                    env_temp     = COALESCE(EXCLUDED.env_temp,    {settings.pg_schema_environment}.{device_sn}.env_temp),
-                    env_humidity = COALESCE(EXCLUDED.env_humidity, {settings.pg_schema_environment}.{device_sn}.env_humidity),
-                    neck_temp    = COALESCE(EXCLUDED.neck_temp,   {settings.pg_schema_environment}.{device_sn}.neck_temp),
-                    updated_at   = EXCLUDED.updated_at
-            """), {"ts": day_ts, "env_temp": avg_env_temp,
-                   "env_humi": avg_env_humi, "neck_temp": avg_neck_temp, "now": now_ms})
-        await db.commit()
-
-    # 推进断点
-    now_ms = int(time.time() * 1000)
-    async with AsyncSessionLocal() as db:
-        updates = {}
-        if env_rows:
-            updates["last_env_ts"] = max(r["ts_ms"] for r in env_rows)
-        if neck_rows:
-            updates["last_neck_temp_ts"] = max(r["ts_ms"] for r in neck_rows)
-        for col, val in updates.items():
-            await db.execute(text(f"""
-                UPDATE device_sync_state SET {col} = :val, updated_at = :now
+    # ── 循环拉取 env_raw，直到追上历史 ───────────────────────────────────
+    while True:
+        env_rows = await asyncio.to_thread(td_fetch_env, device_sn, last_env_ts)
+        if not env_rows:
+            break
+        env_by_day = _group_by_day(env_rows, ["env_temp", "env_humi"])
+        now_ms = int(time.time() * 1000)
+        async with AsyncSessionLocal() as db:
+            for day_ts, env_d in env_by_day.items():
+                avg_env_temp = round(sum(env_d["env_temp"]) / len(env_d["env_temp"]), 2) \
+                               if env_d.get("env_temp") else None
+                avg_env_humi = round(sum(env_d["env_humi"]) / len(env_d["env_humi"]), 1) \
+                               if env_d.get("env_humi") else None
+                await db.execute(text(f"""
+                    INSERT INTO {settings.pg_schema_environment}.{device_sn}
+                        (ts, env_temp, env_humidity, neck_temp, created_at, updated_at)
+                    VALUES (:ts, :env_temp, :env_humi, NULL, :now, :now)
+                    ON CONFLICT (ts) DO UPDATE SET
+                        env_temp     = COALESCE(EXCLUDED.env_temp,    {settings.pg_schema_environment}.{device_sn}.env_temp),
+                        env_humidity = COALESCE(EXCLUDED.env_humidity, {settings.pg_schema_environment}.{device_sn}.env_humidity),
+                        updated_at   = EXCLUDED.updated_at
+                """), {"ts": day_ts, "env_temp": avg_env_temp, "env_humi": avg_env_humi, "now": now_ms})
+            await db.commit()
+        new_env_ts = max(r["ts_ms"] for r in env_rows)
+        async with AsyncSessionLocal() as db:
+            await db.execute(text("""
+                UPDATE device_sync_state SET last_env_ts = :val, updated_at = :now
                 WHERE device_sn = :sn
-            """), {"val": val, "now": now_ms, "sn": device_sn})
-        await db.commit()
+            """), {"val": new_env_ts, "now": now_ms, "sn": device_sn})
+            await db.commit()
+        total_env += len(env_rows)
+        total_days += len(env_by_day)
+        last_env_ts = new_env_ts
 
-    logger.info("环境数据同步 设备={} env={} 条 neck_temp={} 条 天数={}",
-                device_sn, len(env_rows), len(neck_rows), len(all_days))
+    # ── 循环拉取 neck_temp_raw，直到追上历史 ─────────────────────────────
+    while True:
+        neck_rows = await asyncio.to_thread(td_fetch_neck_temp, device_sn, last_neck_temp_ts)
+        if not neck_rows:
+            break
+        neck_by_day = _group_by_day(neck_rows, ["neck_temp"])
+        now_ms = int(time.time() * 1000)
+        async with AsyncSessionLocal() as db:
+            for day_ts, neck_d in neck_by_day.items():
+                avg_neck_temp = round(sum(neck_d["neck_temp"]) / len(neck_d["neck_temp"]), 2) \
+                                if neck_d.get("neck_temp") else None
+                await db.execute(text(f"""
+                    INSERT INTO {settings.pg_schema_environment}.{device_sn}
+                        (ts, env_temp, env_humidity, neck_temp, created_at, updated_at)
+                    VALUES (:ts, NULL, NULL, :neck_temp, :now, :now)
+                    ON CONFLICT (ts) DO UPDATE SET
+                        neck_temp  = COALESCE(EXCLUDED.neck_temp, {settings.pg_schema_environment}.{device_sn}.neck_temp),
+                        updated_at = EXCLUDED.updated_at
+                """), {"ts": day_ts, "neck_temp": avg_neck_temp, "now": now_ms})
+            await db.commit()
+        new_neck_ts = max(r["ts_ms"] for r in neck_rows)
+        async with AsyncSessionLocal() as db:
+            await db.execute(text("""
+                UPDATE device_sync_state SET last_neck_temp_ts = :val, updated_at = :now
+                WHERE device_sn = :sn
+            """), {"val": new_neck_ts, "now": now_ms, "sn": device_sn})
+            await db.commit()
+        total_neck += len(neck_rows)
+        last_neck_temp_ts = new_neck_ts
+
+    if total_env or total_neck:
+        logger.info("环境数据同步 设备={} env={} 条 neck_temp={} 条 天数={}",
+                    device_sn, total_env, total_neck, total_days)
+    else:
+        logger.info("设备 {} 环境/体温数据无更新，跳过", device_sn)
 
 
 # ---------------------------------------------------------------------------
@@ -378,40 +390,51 @@ async def run_inference_cycle() -> None:
                 """), {"sn": device_sn})).fetchone()
             last_ts = int(row.last_processed_ts) if row else 0
 
-            imu_rows = await asyncio.to_thread(td_fetch, device_sn, last_ts)
+            any_data = False
+            failed = False
 
-            if not imu_rows:
-                logger.info("设备 {} 数据无更新，跳过本次推理", device_sn)
-                continue
+            # 循环拉取直到追上所有历史数据（每批 td_batch_size 行）
+            while not failed:
+                imu_rows = await asyncio.to_thread(td_fetch, device_sn, last_ts)
+                if not imu_rows:
+                    if not any_data:
+                        logger.info("设备 {} 数据无更新，跳过本次推理", device_sn)
+                    break
+                any_data = True
 
-            # 按 UTC 日期零点分组
-            day_groups: dict[int, list[dict]] = {}
-            for r in imu_rows:
-                day_key = (r["ts_ms"] // 86_400_000) * 86_400_000
-                day_groups.setdefault(day_key, []).append(r)
+                # 按 UTC 日期零点分组
+                day_groups: dict[int, list[dict]] = {}
+                for r in imu_rows:
+                    day_key = (r["ts_ms"] // 86_400_000) * 86_400_000
+                    day_groups.setdefault(day_key, []).append(r)
 
-            # 逐天处理，遇到失败记录后停止（保证 last_processed_ts 连续推进）
-            max_ts = last_ts
-            for day_ts, day_rows in sorted(day_groups.items()):
-                try:
-                    await _process_day(clf, device_sn, day_ts, day_rows, today_ts)
-                    await _mark_success(device_sn, day_ts)
-                    max_ts = max(r["ts_ms"] for r in day_rows)
-                except Exception as e:
-                    logger.exception("设备 {} 日期 {} 推理失败，已记录待重试", device_sn, day_ts)
-                    await _record_failure(device_sn, day_ts, e)
-                    break  # 保证时序连续，下次从这天重试
+                # 逐天处理，遇到失败记录后停止（保证 last_processed_ts 连续推进）
+                max_ts = last_ts
+                for day_ts, day_rows in sorted(day_groups.items()):
+                    try:
+                        await _process_day(clf, device_sn, day_ts, day_rows, today_ts)
+                        await _mark_success(device_sn, day_ts)
+                        max_ts = max(r["ts_ms"] for r in day_rows)
+                    except Exception as e:
+                        logger.exception("设备 {} 日期 {} 推理失败，已记录待重试", device_sn, day_ts)
+                        await _record_failure(device_sn, day_ts, e)
+                        failed = True
+                        break  # 保证时序连续，下次从这天重试
 
-            # 只将成功处理的部分推进断点
-            if max_ts > last_ts:
-                now_ms = int(time.time() * 1000)
-                async with AsyncSessionLocal() as db:
-                    await db.execute(text("""
-                        UPDATE device_sync_state
-                        SET last_processed_ts = :ts, last_sync_at = :now, updated_at = :now
-                        WHERE device_sn = :sn
-                    """), {"ts": max_ts, "now": now_ms, "sn": device_sn})
-                    await db.commit()
+                # 推进断点，供下一批次使用
+                if max_ts > last_ts:
+                    last_ts = max_ts
+                    now_ms = int(time.time() * 1000)
+                    async with AsyncSessionLocal() as db:
+                        await db.execute(text("""
+                            UPDATE device_sync_state
+                            SET last_processed_ts = :ts, last_sync_at = :now, updated_at = :now
+                            WHERE device_sn = :sn
+                        """), {"ts": max_ts, "now": now_ms, "sn": device_sn})
+                        await db.commit()
+                elif not failed:
+                    # 本批次没有新的进展（全部当天数据，或无可推进），退出循环
+                    break
 
         except Exception:
             logger.exception("设备 {} 推理周期失败", device_sn)
