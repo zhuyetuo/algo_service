@@ -90,9 +90,5 @@ class Settings(BaseSettings):
     # 每次从 TDengine 单设备拉取的最大行数
     td_batch_size: int = 50000
 
-    # 用户所在时区相对 UTC 的小时偏移（用于按本地日期分组和评估）
-    # 例如：中国标准时间 UTC+8 填 8，UTC-5 填 -5
-    tz_offset_hours: int = 8
-
 
 settings = Settings()
