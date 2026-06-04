@@ -147,8 +147,9 @@ async def _retry_pending(clf, today_ts: int) -> None:
         try:
             last_ts = day_ts - 1
             imu_rows = await asyncio.to_thread(td_fetch, device_sn, last_ts)
+            _tz_ms = settings.tz_offset_hours * 3_600_000
             day_rows = [r for r in imu_rows
-                        if (r["ts_ms"] // 86_400_000) * 86_400_000 == day_ts]
+                        if ((r["ts_ms"] + _tz_ms) // 86_400_000) * 86_400_000 - _tz_ms == day_ts]
             if not day_rows:
                 logger.warning("重试 设备={} 日期={} 无数据，跳过", device_sn, day_ts)
                 continue
@@ -357,7 +358,9 @@ async def run_inference_cycle() -> None:
         logger.warning("未找到模型文件 — 跳过本次推理周期")
         return
 
-    today_ts = (int(time.time() * 1000) // 86_400_000) * 86_400_000
+    _tz_ms = settings.tz_offset_hours * 3_600_000
+    now_ms = int(time.time() * 1000)
+    today_ts = ((now_ms + _tz_ms) // 86_400_000) * 86_400_000 - _tz_ms
 
     # ── 1. 先重试上次失败的记录 ──────────────────────────────────────────
     await _retry_pending(clf, today_ts)
@@ -443,7 +446,8 @@ async def run_inference_cycle() -> None:
                 # 按 UTC 日期零点分组，写入行为事件
                 day_groups: dict[int, list[dict]] = {}
                 for r in imu_rows:
-                    day_key = (r["ts_ms"] // 86_400_000) * 86_400_000
+                    tz_ms = settings.tz_offset_hours * 3_600_000
+                    day_key = ((r["ts_ms"] + tz_ms) // 86_400_000) * 86_400_000 - tz_ms
                     day_groups.setdefault(day_key, []).append(r)
 
                 max_ts = last_ts

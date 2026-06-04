@@ -622,9 +622,10 @@ async def run_batch_assessment(stat_date_ts: int | None = None) -> None:
     若为 None，则使用当前 UTC 零点（适用于单时区部署）。
     """
     if stat_date_ts is None:
-        # 默认使用当前 UTC 日期零点
-        now = int(time.time())
-        stat_date_ts = (now // 86400) * 86400 * 1000
+        # 按本地时区计算当天零点对应的 UTC 毫秒时间戳
+        tz_ms = settings.tz_offset_hours * 3_600_000
+        now_ms = int(time.time() * 1000)
+        stat_date_ts = ((now_ms + tz_ms) // 86_400_000) * 86_400_000 - tz_ms
 
     async with AsyncSessionLocal() as db:
         # 从 device_sync_state 获取所有设备列表
