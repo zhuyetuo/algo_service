@@ -174,6 +174,16 @@ def _day_start_utc_ms(ts_ms: int, tz_name: str | None) -> int:
         return (ts_ms // 86_400_000) * 86_400_000
 
 
+def _ts_to_local_date(ts_ms: int, tz_name: str | None) -> str:
+    """UTC 毫秒时间戳 → 用户本地日期字符串（"%Y-%m-%d"）。"""
+    try:
+        tz = ZoneInfo(tz_name) if tz_name and tz_name != "UTC" else dt_tz.utc
+        dt = datetime.fromtimestamp(ts_ms / 1000, tz=dt_tz.utc).astimezone(tz)
+    except Exception:
+        dt = datetime.fromtimestamp(ts_ms / 1000, tz=dt_tz.utc)
+    return dt.strftime("%Y-%m-%d")
+
+
 def _score_to_level(score: float) -> int:
     """将总分（0-100）映射到健康等级 L0-L10，每10分一档。"""
     return min(int(score // 10), 10)
@@ -325,6 +335,8 @@ async def assess_device(db: AsyncSession, device_id: int, stat_date_ts: int, use
     await db.execute(text(f"""
         CREATE TABLE IF NOT EXISTS {a_tbl} (
             stat_date_ts       bigint PRIMARY KEY,
+            local_date         varchar(12),
+            user_timezone      varchar(32),
             scratch_count      int            NOT NULL DEFAULT 0,
             scratch_duration   bigint         NOT NULL DEFAULT 0,
             scratch_avg_dur    int            NOT NULL DEFAULT 0,
@@ -362,6 +374,8 @@ async def assess_device(db: AsyncSession, device_id: int, stat_date_ts: int, use
             updated_at         bigint         NOT NULL
         )
     """))
+    await db.execute(text(f"ALTER TABLE {a_tbl} ADD COLUMN IF NOT EXISTS local_date    varchar(12)"))
+    await db.execute(text(f"ALTER TABLE {a_tbl} ADD COLUMN IF NOT EXISTS user_timezone varchar(32)"))
     await db.commit()  # DDL must be committed before reads on this table
 
     # 从环境表读取当天颈部体温（由 env sync 预先写入）
@@ -519,7 +533,7 @@ async def assess_device(db: AsyncSession, device_id: int, stat_date_ts: int, use
     now_ms = int(time.time() * 1000)
     upsert_sql = text(f"""
         INSERT INTO {a_tbl} (
-            stat_date_ts,
+            stat_date_ts, local_date, user_timezone,
             scratch_count, scratch_duration, scratch_avg_dur, scratch_max_dur,
             night_scratch_count,
             baseline_mean, baseline_std, temp_coef,
@@ -534,7 +548,7 @@ async def assess_device(db: AsyncSession, device_id: int, stat_date_ts: int, use
             total_score, health_level,
             created_at, updated_at
         ) VALUES (
-            :stat_date_ts,
+            :stat_date_ts, :local_date, :user_timezone,
             :scratch_count, :scratch_dur, :scratch_avg_dur, :scratch_max_dur,
             :night_count,
             :bl_mean, :bl_std, :temp_coef,
@@ -550,6 +564,8 @@ async def assess_device(db: AsyncSession, device_id: int, stat_date_ts: int, use
             :now_ms, :now_ms
         )
         ON CONFLICT (stat_date_ts) DO UPDATE SET
+            local_date           = EXCLUDED.local_date,
+            user_timezone        = EXCLUDED.user_timezone,
             scratch_count        = EXCLUDED.scratch_count,
             scratch_duration     = EXCLUDED.scratch_duration,
             scratch_avg_dur      = EXCLUDED.scratch_avg_dur,
@@ -577,6 +593,8 @@ async def assess_device(db: AsyncSession, device_id: int, stat_date_ts: int, use
     """)
     await db.execute(upsert_sql, {
         "stat_date_ts":     stat_date_ts,
+        "local_date":       _ts_to_local_date(stat_date_ts, user_timezone),
+        "user_timezone":    user_timezone or "UTC",
         "scratch_count":    scratch_count,
         "scratch_dur":      scratch_dur,
         "scratch_avg_dur":  scratch_avg_dur,
