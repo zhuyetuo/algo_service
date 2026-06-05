@@ -75,18 +75,24 @@ def start_scheduler():
         IntervalTrigger(minutes=settings.fetch_interval_min),
         id="inference_cycle",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     _scheduler.add_job(
         _run(run_batch_assessment),
         CronTrigger.from_crontab(settings.assessment_cron),
         id="batch_assessment",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     _scheduler.add_job(
         _run(run_baseline_update),
         CronTrigger.from_crontab(settings.baseline_update_cron),
         id="baseline_update",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
     _scheduler.start()
     logger.info(
