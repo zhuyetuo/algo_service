@@ -63,6 +63,16 @@ def _day_start_utc_ms(ts_ms: int, tz_name: str | None) -> int:
         return (ts_ms // 86_400_000) * 86_400_000
 
 
+def _ts_to_local_str(ts_ms: int, tz_name: str | None, date_only: bool = False) -> str:
+    """UTC 毫秒时间戳 → 用户本地时间字符串（"%Y-%m-%d %H:%M:%S" 或 "%Y-%m-%d"）。"""
+    try:
+        tz = ZoneInfo(tz_name) if tz_name and tz_name != "UTC" else dt_tz.utc
+        dt = datetime.fromtimestamp(ts_ms / 1000, tz=dt_tz.utc).astimezone(tz)
+    except Exception:
+        dt = datetime.fromtimestamp(ts_ms / 1000, tz=dt_tz.utc)
+    return dt.strftime("%Y-%m-%d") if date_only else dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
 # ---------------------------------------------------------------------------
 # 调度器启动与停止
 # ---------------------------------------------------------------------------
@@ -178,7 +188,8 @@ async def _retry_pending(clf, device_tz_map: dict[int, str]) -> None:
 
 
 async def _write_behavior(clf, device_id: int, day_ts: int,
-                          day_rows: list[dict]) -> int:
+                          day_rows: list[dict],
+                          user_timezone: str | None = None) -> int:
     """对一批 IMU 数据执行推理并将行为事件写入行为表，返回写入的事件数。"""
     tbl = f"{settings.pg_schema_behavior}.d_{device_id}"
     day_rows_sorted = sorted(day_rows, key=lambda r: r["ts_ms"])
@@ -191,31 +202,45 @@ async def _write_behavior(clf, device_id: int, day_ts: int,
     )
     events = clf.predict(data, base_ts_ms)
 
+    tz = user_timezone or "UTC"
     async with AsyncSessionLocal() as db:
         await db.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {tbl} (
-                id           bigserial PRIMARY KEY,
-                ts_start     bigint        NOT NULL UNIQUE,
-                ts_end       bigint        NOT NULL,
-                behavior     smallint      NOT NULL,
-                duration_sec decimal(10,2) NOT NULL,
-                confidence   decimal(5,3)  NOT NULL
+                id            bigserial     PRIMARY KEY,
+                ts_start      bigint        NOT NULL UNIQUE,
+                ts_end        bigint        NOT NULL,
+                behavior      smallint      NOT NULL,
+                duration_sec  decimal(10,2) NOT NULL,
+                confidence    decimal(5,3)  NOT NULL,
+                local_start   varchar(24),
+                local_end     varchar(24),
+                user_timezone varchar(32)
             )
         """))
+        await db.execute(text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS local_start   varchar(24)"))
+        await db.execute(text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS local_end     varchar(24)"))
+        await db.execute(text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS user_timezone varchar(32)"))
         await db.commit()
         for ev in events:
             btype = int(ev["behavior_type"])
             dur_sec = round((ev["end_time"] - ev["start_time"]) / 1000.0, 2)
             await db.execute(text(f"""
-                INSERT INTO {tbl} (ts_start, ts_end, behavior, duration_sec, confidence)
-                VALUES (:ts_start, :ts_end, :behavior, :duration_sec, :confidence)
+                INSERT INTO {tbl}
+                    (ts_start, ts_end, behavior, duration_sec, confidence,
+                     local_start, local_end, user_timezone)
+                VALUES
+                    (:ts_start, :ts_end, :behavior, :duration_sec, :confidence,
+                     :local_start, :local_end, :tz)
                 ON CONFLICT (ts_start) DO NOTHING
             """), {
-                "ts_start":     ev["start_time"],
-                "ts_end":       ev["end_time"],
-                "behavior":     btype,
+                "ts_start":    ev["start_time"],
+                "ts_end":      ev["end_time"],
+                "behavior":    btype,
                 "duration_sec": dur_sec,
-                "confidence":   ev["confidence"],
+                "confidence":  ev["confidence"],
+                "local_start": _ts_to_local_str(ev["start_time"], tz),
+                "local_end":   _ts_to_local_str(ev["end_time"],   tz),
+                "tz":          tz,
             })
         await db.commit()
 
@@ -226,7 +251,7 @@ async def _process_day(clf, device_id: int, day_ts: int,
                        day_rows: list[dict], today_ts: int,
                        user_timezone: str | None = None) -> None:
     """写入行为事件并立即评估，专供重试逻辑使用（该天数据已完整）。"""
-    event_count = await _write_behavior(clf, device_id, day_ts, day_rows)
+    event_count = await _write_behavior(clf, device_id, day_ts, day_rows, user_timezone)
     logger.info("设备={} 日期={} 事件数={}", device_id, day_ts, event_count)
     if day_ts < today_ts:
         async with AsyncSessionLocal() as db:
@@ -263,10 +288,14 @@ async def _sync_env_for_device(device_id: int, user_timezone: str | None) -> Non
                 env_temp        decimal(5,2),
                 env_humidity    decimal(5,1),
                 neck_temp       decimal(5,2),
+                local_date      varchar(12),
+                user_timezone   varchar(32),
                 created_at      bigint NOT NULL,
                 updated_at      bigint NOT NULL
             )
         """))
+        await db.execute(text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS local_date    varchar(12)"))
+        await db.execute(text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS user_timezone varchar(32)"))
         await db.commit()
 
     total_env = total_neck = total_days = 0
@@ -284,13 +313,26 @@ async def _sync_env_for_device(device_id: int, user_timezone: str | None) -> Non
                 avg_env_humi = round(sum(env_d["env_humi"]) / len(env_d["env_humi"]), 1) \
                                if env_d.get("env_humi") else None
                 await db.execute(text(f"""
-                    INSERT INTO {tbl} (ts, env_temp, env_humidity, neck_temp, created_at, updated_at)
-                    VALUES (:ts, :env_temp, :env_humi, NULL, :now, :now)
+                    INSERT INTO {tbl}
+                        (ts, env_temp, env_humidity, neck_temp,
+                         local_date, user_timezone, created_at, updated_at)
+                    VALUES
+                        (:ts, :env_temp, :env_humi, NULL,
+                         :local_date, :tz, :now, :now)
                     ON CONFLICT (ts) DO UPDATE SET
-                        env_temp     = COALESCE(EXCLUDED.env_temp,    {tbl}.env_temp),
-                        env_humidity = COALESCE(EXCLUDED.env_humidity, {tbl}.env_humidity),
-                        updated_at   = EXCLUDED.updated_at
-                """), {"ts": day_ts, "env_temp": avg_env_temp, "env_humi": avg_env_humi, "now": now_ms})
+                        env_temp      = COALESCE(EXCLUDED.env_temp,     {tbl}.env_temp),
+                        env_humidity  = COALESCE(EXCLUDED.env_humidity, {tbl}.env_humidity),
+                        local_date    = EXCLUDED.local_date,
+                        user_timezone = EXCLUDED.user_timezone,
+                        updated_at    = EXCLUDED.updated_at
+                """), {
+                    "ts": day_ts,
+                    "env_temp": avg_env_temp,
+                    "env_humi": avg_env_humi,
+                    "local_date": _ts_to_local_str(day_ts, user_timezone, date_only=True),
+                    "tz": user_timezone or "UTC",
+                    "now": now_ms,
+                })
             await db.commit()
         new_env_ts = max(r["ts_ms"] for r in env_rows)
         async with AsyncSessionLocal() as db:
@@ -314,12 +356,24 @@ async def _sync_env_for_device(device_id: int, user_timezone: str | None) -> Non
                 avg_neck_temp = round(sum(neck_d["neck_temp"]) / len(neck_d["neck_temp"]), 2) \
                                 if neck_d.get("neck_temp") else None
                 await db.execute(text(f"""
-                    INSERT INTO {tbl} (ts, env_temp, env_humidity, neck_temp, created_at, updated_at)
-                    VALUES (:ts, NULL, NULL, :neck_temp, :now, :now)
+                    INSERT INTO {tbl}
+                        (ts, env_temp, env_humidity, neck_temp,
+                         local_date, user_timezone, created_at, updated_at)
+                    VALUES
+                        (:ts, NULL, NULL, :neck_temp,
+                         :local_date, :tz, :now, :now)
                     ON CONFLICT (ts) DO UPDATE SET
-                        neck_temp  = COALESCE(EXCLUDED.neck_temp, {tbl}.neck_temp),
-                        updated_at = EXCLUDED.updated_at
-                """), {"ts": day_ts, "neck_temp": avg_neck_temp, "now": now_ms})
+                        neck_temp     = COALESCE(EXCLUDED.neck_temp, {tbl}.neck_temp),
+                        local_date    = EXCLUDED.local_date,
+                        user_timezone = EXCLUDED.user_timezone,
+                        updated_at    = EXCLUDED.updated_at
+                """), {
+                    "ts": day_ts,
+                    "neck_temp": avg_neck_temp,
+                    "local_date": _ts_to_local_str(day_ts, user_timezone, date_only=True),
+                    "tz": user_timezone or "UTC",
+                    "now": now_ms,
+                })
             await db.commit()
         new_neck_ts = max(r["ts_ms"] for r in neck_rows)
         async with AsyncSessionLocal() as db:
@@ -472,7 +526,7 @@ async def run_inference_cycle() -> None:
                 max_ts = last_ts
                 for day_ts, day_rows in sorted(day_groups.items()):
                     try:
-                        event_count = await _write_behavior(clf, device_id, day_ts, day_rows)
+                        event_count = await _write_behavior(clf, device_id, day_ts, day_rows, user_tz)
                         logger.info("设备={} 日期={} 事件数={}", device_id, day_ts, event_count)
                         pending_assess.add(day_ts)
                         max_ts = max(r["ts_ms"] for r in day_rows)
