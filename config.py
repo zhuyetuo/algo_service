@@ -93,5 +93,9 @@ class Settings(BaseSettings):
     # 推理周期最大并发设备数（Semaphore 上限）
     device_concurrency: int = 100
 
+    # PostgreSQL 连接池配置
+    db_pool_size: int = 50       # 常驻连接数
+    db_max_overflow: int = 100   # 超出 pool_size 后最多再借出的连接数
+
 
 settings = Settings()
