@@ -1,0 +1,3 @@
+[submodule "database_infra"]
+	path = database_infra
+	url = https://github.com/zhuyetuo/database_infra.git

@@ -44,6 +44,43 @@ docker compose down
 docker compose down -v
 ```
 
+---
+
+## 数据基础设施
+
+测试数据由独立仓库 [`database_infra`](database_infra/) 提供（已作为 git submodule 引入）。
+
+```bash
+# 首次 clone 时同步 submodule
+git submodule update --init
+
+# 启动 PostgreSQL + TDengine
+cd database_infra && docker compose up -d
+
+# 生成 180 天历史数据（确认 imu_raw_db.py 里 DAYS=180）
+python imu_raw_db.py
+python behavior_db.py
+python environment_db.py
+python pg_seed.py
+
+# 或一键重置并重新生成
+./reset_and_load.sh
+```
+
+**查询 TDengine 数据量**（无需 algo_service 容器在线，直接查 TDengine 容器）：
+
+```bash
+# 查看指定设备的 IMU 数据范围
+curl -s -u root:taosdata \
+  -d "SELECT COUNT(*), FIRST(ts), LAST(ts) FROM pet_collar_raw.imu_raw WHERE device_id=1" \
+  http://localhost:6041/rest/sql | python3 -m json.tool
+
+# 查看所有设备 IMU 数据量汇总
+curl -s -u root:taosdata \
+  -d "SELECT device_id, COUNT(*) FROM pet_collar_raw.imu_raw GROUP BY device_id ORDER BY device_id" \
+  http://localhost:6041/rest/sql | python3 -m json.tool
+```
+
 > 详细说明见 [docs/deployment.md](docs/deployment.md)
 
 ---
