@@ -90,5 +90,8 @@ class Settings(BaseSettings):
     # 每次从 TDengine 单设备拉取的最大行数
     td_batch_size: int = 50000
 
+    # 推理周期最大并发设备数（Semaphore 上限）
+    device_concurrency: int = 100
+
 
 settings = Settings()

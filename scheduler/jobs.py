@@ -397,6 +397,96 @@ async def _sync_env_for_device(device_id: int, user_timezone: str | None) -> Non
 
 
 # ---------------------------------------------------------------------------
+# 单设备 IMU 处理（供并发调用）
+# ---------------------------------------------------------------------------
+
+async def _process_device_imu(clf, device_id: int,
+                               user_tz: str | None, now_ms: int) -> None:
+    """拉取并推理单台设备的 IMU 新数据，写入行为事件并触发评估。"""
+    today_ts = _day_start_utc_ms(now_ms, user_tz)
+    try:
+        async with AsyncSessionLocal() as db:
+            row = (await db.execute(text("""
+                SELECT last_processed_ts FROM device_sync_state WHERE device_id = :did
+            """), {"did": device_id})).fetchone()
+        last_ts = int(row.last_processed_ts) if row else 0
+
+        any_data = False
+        failed = False
+        pending_assess: set[int] = set()
+
+        while not failed:
+            imu_rows = await asyncio.to_thread(td_fetch, device_id, last_ts)
+
+            if not imu_rows:
+                if not any_data:
+                    logger.info("设备 {} 数据无更新，跳过本次推理", device_id)
+                for day_ts in sorted(pending_assess):
+                    if day_ts < today_ts:
+                        try:
+                            async with AsyncSessionLocal() as db:
+                                await assess_device(db, device_id, day_ts, user_tz)
+                            await _mark_success(device_id, day_ts)
+                        except Exception as e:
+                            logger.exception("设备 {} 日期 {} ({}) 评估失败", device_id, day_ts,
+                                            _ts_to_local_str(day_ts, user_tz, date_only=True))
+                            await _record_failure(device_id, day_ts, e)
+                break
+
+            any_data = True
+
+            batch_min_day = _day_start_utc_ms(min(r["ts_ms"] for r in imu_rows), user_tz)
+            for day_ts in sorted(list(pending_assess)):
+                if day_ts < batch_min_day:
+                    if day_ts < today_ts:
+                        try:
+                            async with AsyncSessionLocal() as db:
+                                await assess_device(db, device_id, day_ts, user_tz)
+                            await _mark_success(device_id, day_ts)
+                        except Exception as e:
+                            logger.exception("设备 {} 日期 {} ({}) 评估失败", device_id, day_ts,
+                                            _ts_to_local_str(day_ts, user_tz, date_only=True))
+                            await _record_failure(device_id, day_ts, e)
+                    pending_assess.discard(day_ts)
+
+            day_groups: dict[int, list[dict]] = {}
+            for r in imu_rows:
+                day_key = _day_start_utc_ms(r["ts_ms"], user_tz)
+                day_groups.setdefault(day_key, []).append(r)
+
+            max_ts = last_ts
+            for day_ts, day_rows in sorted(day_groups.items()):
+                try:
+                    event_count = await _write_behavior(clf, device_id, day_ts, day_rows, user_tz)
+                    logger.info("设备={} 日期={} ({}) 事件数={}", device_id, day_ts,
+                                _ts_to_local_str(day_ts, user_tz, date_only=True), event_count)
+                    pending_assess.add(day_ts)
+                    max_ts = max(r["ts_ms"] for r in day_rows)
+                except Exception as e:
+                    logger.exception("设备 {} 日期 {} ({}) 推理失败，已记录待重试", device_id, day_ts,
+                                    _ts_to_local_str(day_ts, user_tz, date_only=True))
+                    await _record_failure(device_id, day_ts, e)
+                    failed = True
+                    break
+
+            if max_ts > last_ts:
+                last_ts = max_ts
+                cur_ms = int(time.time() * 1000)
+                async with AsyncSessionLocal() as db:
+                    await db.execute(text("""
+                        UPDATE device_sync_state
+                        SET last_processed_ts = :ts, last_sync_at = :now, updated_at = :now
+                        WHERE device_id = :did
+                    """), {"ts": max_ts, "now": cur_ms, "did": device_id})
+                    await db.commit()
+            elif not failed:
+                break
+
+    except Exception:
+        logger.exception("设备 {} 推理周期失败", device_id)
+
+
+# ---------------------------------------------------------------------------
 # 推理周期
 # ---------------------------------------------------------------------------
 
@@ -468,94 +558,21 @@ async def run_inference_cycle() -> None:
     # ── 2. 重试上次失败的记录 ────────────────────────────────────────────
     await _retry_pending(clf, device_tz_map)
 
-    # ── 3. 逐设备同步环境 + 颈温数据 ────────────────────────────────────
-    for device_id in devices:
-        try:
-            await _sync_env_for_device(device_id, device_tz_map.get(device_id))
-        except Exception:
-            logger.exception("设备 {} 环境数据同步失败", device_id)
+    sem = asyncio.Semaphore(settings.device_concurrency)
 
-    # ── 4. 逐设备处理 IMU 新数据 ─────────────────────────────────────────
-    for device_id in devices:
-        user_tz = device_tz_map.get(device_id)
-        today_ts = _day_start_utc_ms(now_ms, user_tz)
-        try:
-            async with AsyncSessionLocal() as db:
-                row = (await db.execute(text("""
-                    SELECT last_processed_ts FROM device_sync_state WHERE device_id = :did
-                """), {"did": device_id})).fetchone()
-            last_ts = int(row.last_processed_ts) if row else 0
+    # ── 3. 并发同步环境 + 颈温数据 ───────────────────────────────────────
+    async def _env_task(device_id: int) -> None:
+        async with sem:
+            try:
+                await _sync_env_for_device(device_id, device_tz_map.get(device_id))
+            except Exception:
+                logger.exception("设备 {} 环境数据同步失败", device_id)
 
-            any_data = False
-            failed = False
-            pending_assess: set[int] = set()
+    await asyncio.gather(*[_env_task(d) for d in devices])
 
-            while not failed:
-                imu_rows = await asyncio.to_thread(td_fetch, device_id, last_ts)
+    # ── 4. 并发处理 IMU 新数据 ────────────────────────────────────────────
+    async def _imu_task(device_id: int) -> None:
+        async with sem:
+            await _process_device_imu(clf, device_id, device_tz_map.get(device_id), now_ms)
 
-                if not imu_rows:
-                    if not any_data:
-                        logger.info("设备 {} 数据无更新，跳过本次推理", device_id)
-                    for day_ts in sorted(pending_assess):
-                        if day_ts < today_ts:
-                            try:
-                                async with AsyncSessionLocal() as db:
-                                    await assess_device(db, device_id, day_ts, user_tz)
-                                await _mark_success(device_id, day_ts)
-                            except Exception as e:
-                                logger.exception("设备 {} 日期 {} ({}) 评估失败", device_id, day_ts,
-                                                _ts_to_local_str(day_ts, user_tz, date_only=True))
-                                await _record_failure(device_id, day_ts, e)
-                    break
-
-                any_data = True
-
-                batch_min_day = _day_start_utc_ms(min(r["ts_ms"] for r in imu_rows), user_tz)
-                for day_ts in sorted(list(pending_assess)):
-                    if day_ts < batch_min_day:
-                        if day_ts < today_ts:
-                            try:
-                                async with AsyncSessionLocal() as db:
-                                    await assess_device(db, device_id, day_ts, user_tz)
-                                await _mark_success(device_id, day_ts)
-                            except Exception as e:
-                                logger.exception("设备 {} 日期 {} ({}) 评估失败", device_id, day_ts,
-                                                _ts_to_local_str(day_ts, user_tz, date_only=True))
-                                await _record_failure(device_id, day_ts, e)
-                        pending_assess.discard(day_ts)
-
-                day_groups: dict[int, list[dict]] = {}
-                for r in imu_rows:
-                    day_key = _day_start_utc_ms(r["ts_ms"], user_tz)
-                    day_groups.setdefault(day_key, []).append(r)
-
-                max_ts = last_ts
-                for day_ts, day_rows in sorted(day_groups.items()):
-                    try:
-                        event_count = await _write_behavior(clf, device_id, day_ts, day_rows, user_tz)
-                        logger.info("设备={} 日期={} ({}) 事件数={}", device_id, day_ts,
-                                    _ts_to_local_str(day_ts, user_tz, date_only=True), event_count)
-                        pending_assess.add(day_ts)
-                        max_ts = max(r["ts_ms"] for r in day_rows)
-                    except Exception as e:
-                        logger.exception("设备 {} 日期 {} ({}) 推理失败，已记录待重试", device_id, day_ts,
-                                        _ts_to_local_str(day_ts, user_tz, date_only=True))
-                        await _record_failure(device_id, day_ts, e)
-                        failed = True
-                        break
-
-                if max_ts > last_ts:
-                    last_ts = max_ts
-                    cur_ms = int(time.time() * 1000)
-                    async with AsyncSessionLocal() as db:
-                        await db.execute(text("""
-                            UPDATE device_sync_state
-                            SET last_processed_ts = :ts, last_sync_at = :now, updated_at = :now
-                            WHERE device_id = :did
-                        """), {"ts": max_ts, "now": cur_ms, "did": device_id})
-                        await db.commit()
-                elif not failed:
-                    break
-
-        except Exception:
-            logger.exception("设备 {} 推理周期失败", device_id)
+    await asyncio.gather(*[_imu_task(d) for d in devices])
