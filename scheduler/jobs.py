@@ -177,13 +177,16 @@ async def _retry_pending(clf, device_tz_map: dict[int, str]) -> None:
             day_rows = [r for r in imu_rows
                         if _day_start_utc_ms(r["ts_ms"], tz) == day_ts]
             if not day_rows:
-                logger.warning("重试 设备={} 日期={} 无数据，跳过", device_id, day_ts)
+                logger.warning("重试 设备={} 日期={} ({}) 无数据，跳过", device_id, day_ts,
+                               _ts_to_local_str(day_ts, tz, date_only=True))
                 continue
             await _process_day(clf, device_id, day_ts, day_rows, today_ts, tz)
             await _mark_success(device_id, day_ts)
-            logger.info("重试成功 设备={} 日期={}", device_id, day_ts)
+            logger.info("重试成功 设备={} 日期={} ({})", device_id, day_ts,
+                        _ts_to_local_str(day_ts, tz, date_only=True))
         except Exception as e:
-            logger.exception("重试仍失败 设备={} 日期={}", device_id, day_ts)
+            logger.exception("重试仍失败 设备={} 日期={} ({})", device_id, day_ts,
+                             _ts_to_local_str(day_ts, tz, date_only=True))
             await _record_failure(device_id, day_ts, e)
 
 
@@ -252,7 +255,8 @@ async def _process_day(clf, device_id: int, day_ts: int,
                        user_timezone: str | None = None) -> None:
     """写入行为事件并立即评估，专供重试逻辑使用（该天数据已完整）。"""
     event_count = await _write_behavior(clf, device_id, day_ts, day_rows, user_timezone)
-    logger.info("设备={} 日期={} 事件数={}", device_id, day_ts, event_count)
+    logger.info("设备={} 日期={} ({}) 事件数={}", device_id, day_ts,
+                _ts_to_local_str(day_ts, user_timezone, date_only=True), event_count)
     if day_ts < today_ts:
         async with AsyncSessionLocal() as db:
             await assess_device(db, device_id, day_ts, user_timezone)
@@ -499,7 +503,8 @@ async def run_inference_cycle() -> None:
                                     await assess_device(db, device_id, day_ts, user_tz)
                                 await _mark_success(device_id, day_ts)
                             except Exception as e:
-                                logger.exception("设备 {} 日期 {} 评估失败", device_id, day_ts)
+                                logger.exception("设备 {} 日期 {} ({}) 评估失败", device_id, day_ts,
+                                                _ts_to_local_str(day_ts, user_tz, date_only=True))
                                 await _record_failure(device_id, day_ts, e)
                     break
 
@@ -514,7 +519,8 @@ async def run_inference_cycle() -> None:
                                     await assess_device(db, device_id, day_ts, user_tz)
                                 await _mark_success(device_id, day_ts)
                             except Exception as e:
-                                logger.exception("设备 {} 日期 {} 评估失败", device_id, day_ts)
+                                logger.exception("设备 {} 日期 {} ({}) 评估失败", device_id, day_ts,
+                                                _ts_to_local_str(day_ts, user_tz, date_only=True))
                                 await _record_failure(device_id, day_ts, e)
                         pending_assess.discard(day_ts)
 
@@ -527,11 +533,13 @@ async def run_inference_cycle() -> None:
                 for day_ts, day_rows in sorted(day_groups.items()):
                     try:
                         event_count = await _write_behavior(clf, device_id, day_ts, day_rows, user_tz)
-                        logger.info("设备={} 日期={} 事件数={}", device_id, day_ts, event_count)
+                        logger.info("设备={} 日期={} ({}) 事件数={}", device_id, day_ts,
+                                    _ts_to_local_str(day_ts, user_tz, date_only=True), event_count)
                         pending_assess.add(day_ts)
                         max_ts = max(r["ts_ms"] for r in day_rows)
                     except Exception as e:
-                        logger.exception("设备 {} 日期 {} 推理失败，已记录待重试", device_id, day_ts)
+                        logger.exception("设备 {} 日期 {} ({}) 推理失败，已记录待重试", device_id, day_ts,
+                                        _ts_to_local_str(day_ts, user_tz, date_only=True))
                         await _record_failure(device_id, day_ts, e)
                         failed = True
                         break
