@@ -9,8 +9,8 @@ class Settings(BaseSettings):
     )
 
     # 数据库连接配置
-    db_host: str = "postgres"
-    db_port: int = 5432
+    db_host: str = "mysql"
+    db_port: int = 3306
     db_name: str = "algo"
     db_user: str = "algo"
     db_password: str = "algo"
@@ -18,8 +18,9 @@ class Settings(BaseSettings):
     @property
     def db_dsn(self) -> str:
         return (
-            f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
+            f"mysql+aiomysql://{self.db_user}:{self.db_password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
+            f"?charset=utf8mb4"
         )
 
     # 日志级别
