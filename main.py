@@ -38,14 +38,14 @@ app.include_router(assessment_router, prefix="/api/v1/assessment", tags=["assess
 
 @app.get("/health", tags=["ops"])
 async def health():
-    result = {"status": "ok", "postgres": "ok", "tdengine": "ok"}
+    result = {"status": "ok", "mysql": "ok", "tdengine": "ok"}
 
-    # 检测 PostgreSQL
+    # 检测 MySQL
     try:
         async with AsyncSessionLocal() as db:
             await db.execute(text("SELECT 1"))
     except Exception as e:
-        result["postgres"] = str(e)
+        result["mysql"] = str(e)
         result["status"] = "degraded"
 
     # 检测 TDengine REST API
