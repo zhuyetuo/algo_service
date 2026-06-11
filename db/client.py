@@ -44,6 +44,7 @@ async def init_db():
                 device_id           BIGINT       PRIMARY KEY,
                 user_id             BIGINT,
                 user_timezone       VARCHAR(32)  NOT NULL DEFAULT 'UTC',
+                device_sn           VARCHAR(64),
                 last_processed_ts   BIGINT       NOT NULL DEFAULT 0,
                 last_env_ts         BIGINT       NOT NULL DEFAULT 0,
                 last_neck_temp_ts   BIGINT       NOT NULL DEFAULT 0,

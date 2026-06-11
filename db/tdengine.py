@@ -29,28 +29,28 @@ def _ts_to_ms(ts) -> int:
     return int(ts)
 
 
-def td_get_devices() -> list[int]:
-    """查询超级表中所有设备的 device_id 列表（调试用）。"""
+def td_get_devices() -> list[str]:
+    """查询超级表中所有设备的 device_sn 列表（调试用）。"""
     conn = _get_conn()
     try:
         cursor = conn.cursor()
-        cursor.execute(f"SELECT DISTINCT device_id FROM {_table()}")
+        cursor.execute(f"SELECT DISTINCT device_sn FROM {_table()}")
         rows = cursor.fetchall()
-        return [int(r[0]) for r in rows]
+        return [str(r[0]) for r in rows]
     finally:
         conn.close()
 
 
-def td_fetch_env(device_id: int, last_ts_ms: int) -> list[dict]:
-    """从 env_raw 拉取指定设备在 last_ts_ms 之后的环境数据。"""
+def td_fetch_env(device_sn: str, last_ts_ms: int) -> list[dict]:
+    """从 env_data 拉取指定设备在 last_ts_ms 之后的环境数据。"""
     conn = _get_conn()
     try:
         cursor = conn.cursor()
         table = f"{settings.td_database}.{settings.td_supertable_env}"
         cursor.execute(f"""
-            SELECT ts, env_temp, env_humi
+            SELECT ts, temperature, humidity
             FROM {table}
-            WHERE device_id = {device_id}
+            WHERE device_sn = '{device_sn}'
               AND ts > {last_ts_ms}
             ORDER BY ts
             LIMIT {settings.td_batch_size}
@@ -68,16 +68,16 @@ def td_fetch_env(device_id: int, last_ts_ms: int) -> list[dict]:
         conn.close()
 
 
-def td_fetch_neck_temp(device_id: int, last_ts_ms: int) -> list[dict]:
-    """从 neck_temp_raw 拉取指定设备在 last_ts_ms 之后的颈部体温数据。"""
+def td_fetch_neck_temp(device_sn: str, last_ts_ms: int) -> list[dict]:
+    """从 body_temp_data 拉取指定设备在 last_ts_ms 之后的体温数据。"""
     conn = _get_conn()
     try:
         cursor = conn.cursor()
         table = f"{settings.td_database}.{settings.td_supertable_neck_temp}"
         cursor.execute(f"""
-            SELECT ts, neck_temp
+            SELECT ts, temp
             FROM {table}
-            WHERE device_id = {device_id}
+            WHERE device_sn = '{device_sn}'
               AND ts > {last_ts_ms}
             ORDER BY ts
             LIMIT {settings.td_batch_size}
@@ -94,15 +94,15 @@ def td_fetch_neck_temp(device_id: int, last_ts_ms: int) -> list[dict]:
         conn.close()
 
 
-def td_fetch(device_id: int, last_ts_ms: int) -> list[dict]:
+def td_fetch(device_sn: str, last_ts_ms: int) -> list[dict]:
     """从 TDengine 拉取指定设备在 last_ts_ms 之后的新 IMU 数据。"""
     conn = _get_conn()
     try:
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT ts, ax, ay, az, gx, gy, gz
+            SELECT ts, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
             FROM {_table()}
-            WHERE device_id = {device_id}
+            WHERE device_sn = '{device_sn}'
               AND ts > {last_ts_ms}
             ORDER BY ts
             LIMIT {settings.td_batch_size}
