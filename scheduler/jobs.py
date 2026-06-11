@@ -131,15 +131,15 @@ async def _record_failure(device_id: int, day_ts: int, error: Exception) -> None
                 (device_id, day_ts, error_msg, retry_count, status, created_at, updated_at)
             VALUES
                 (:did, :day_ts, :msg, 1, 'pending', :now, :now)
-            ON CONFLICT (device_id, day_ts) DO UPDATE SET
-                error_msg   = EXCLUDED.error_msg,
+            ON DUPLICATE KEY UPDATE
+                error_msg   = VALUES(error_msg),
                 retry_count = processing_errors.retry_count + 1,
                 status      = CASE
                                 WHEN processing_errors.retry_count + 1 >= :max_retries
                                 THEN 'abandoned'
                                 ELSE 'pending'
                               END,
-                updated_at  = EXCLUDED.updated_at
+                updated_at  = VALUES(updated_at)
         """), {"did": device_id, "day_ts": day_ts, "msg": error_msg,
                "now": now_ms, "max_retries": MAX_RETRIES})
         await db.commit()
@@ -209,32 +209,29 @@ async def _write_behavior(clf, device_id: int, day_ts: int,
     async with AsyncSessionLocal() as db:
         await db.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {tbl} (
-                id            bigserial     PRIMARY KEY,
-                ts_start      bigint        NOT NULL UNIQUE,
-                ts_end        bigint        NOT NULL,
-                behavior      smallint      NOT NULL,
-                duration_sec  decimal(10,2) NOT NULL,
-                confidence    decimal(5,3)  NOT NULL,
-                local_start   varchar(24),
-                local_end     varchar(24),
-                user_timezone varchar(32)
-            )
+                id            BIGINT        NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                ts_start      BIGINT        NOT NULL,
+                ts_end        BIGINT        NOT NULL,
+                behavior      SMALLINT      NOT NULL,
+                duration_sec  DECIMAL(10,2) NOT NULL,
+                confidence    DECIMAL(5,3)  NOT NULL,
+                local_start   VARCHAR(24),
+                local_end     VARCHAR(24),
+                user_timezone VARCHAR(32),
+                UNIQUE KEY uq_ts_start (ts_start)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """))
-        await db.execute(text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS local_start   varchar(24)"))
-        await db.execute(text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS local_end     varchar(24)"))
-        await db.execute(text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS user_timezone varchar(32)"))
         await db.commit()
         for ev in events:
             btype = int(ev["behavior_type"])
             dur_sec = round((ev["end_time"] - ev["start_time"]) / 1000.0, 2)
             await db.execute(text(f"""
-                INSERT INTO {tbl}
+                INSERT IGNORE INTO {tbl}
                     (ts_start, ts_end, behavior, duration_sec, confidence,
                      local_start, local_end, user_timezone)
                 VALUES
                     (:ts_start, :ts_end, :behavior, :duration_sec, :confidence,
                      :local_start, :local_end, :tz)
-                ON CONFLICT (ts_start) DO NOTHING
             """), {
                 "ts_start":    ev["start_time"],
                 "ts_end":      ev["end_time"],
@@ -288,18 +285,16 @@ async def _sync_env_for_device(device_id: int, user_timezone: str | None) -> Non
     async with AsyncSessionLocal() as db:
         await db.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {tbl} (
-                ts              bigint PRIMARY KEY,
-                env_temp        decimal(5,2),
-                env_humidity    decimal(5,1),
-                neck_temp       decimal(5,2),
-                local_date      varchar(12),
-                user_timezone   varchar(32),
-                created_at      bigint NOT NULL,
-                updated_at      bigint NOT NULL
-            )
+                ts              BIGINT       PRIMARY KEY,
+                env_temp        DECIMAL(5,2),
+                env_humidity    DECIMAL(5,1),
+                neck_temp       DECIMAL(5,2),
+                local_date      VARCHAR(12),
+                user_timezone   VARCHAR(32),
+                created_at      BIGINT       NOT NULL,
+                updated_at      BIGINT       NOT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """))
-        await db.execute(text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS local_date    varchar(12)"))
-        await db.execute(text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS user_timezone varchar(32)"))
         await db.commit()
 
     total_env = total_neck = total_days = 0
@@ -323,12 +318,12 @@ async def _sync_env_for_device(device_id: int, user_timezone: str | None) -> Non
                     VALUES
                         (:ts, :env_temp, :env_humi, NULL,
                          :local_date, :tz, :now, :now)
-                    ON CONFLICT (ts) DO UPDATE SET
-                        env_temp      = COALESCE(EXCLUDED.env_temp,     {tbl}.env_temp),
-                        env_humidity  = COALESCE(EXCLUDED.env_humidity, {tbl}.env_humidity),
-                        local_date    = EXCLUDED.local_date,
-                        user_timezone = EXCLUDED.user_timezone,
-                        updated_at    = EXCLUDED.updated_at
+                    ON DUPLICATE KEY UPDATE
+                        env_temp      = COALESCE(VALUES(env_temp),     env_temp),
+                        env_humidity  = COALESCE(VALUES(env_humidity), env_humidity),
+                        local_date    = VALUES(local_date),
+                        user_timezone = VALUES(user_timezone),
+                        updated_at    = VALUES(updated_at)
                 """), {
                     "ts": day_ts,
                     "env_temp": avg_env_temp,
@@ -366,11 +361,11 @@ async def _sync_env_for_device(device_id: int, user_timezone: str | None) -> Non
                     VALUES
                         (:ts, NULL, NULL, :neck_temp,
                          :local_date, :tz, :now, :now)
-                    ON CONFLICT (ts) DO UPDATE SET
-                        neck_temp     = COALESCE(EXCLUDED.neck_temp, {tbl}.neck_temp),
-                        local_date    = EXCLUDED.local_date,
-                        user_timezone = EXCLUDED.user_timezone,
-                        updated_at    = EXCLUDED.updated_at
+                    ON DUPLICATE KEY UPDATE
+                        neck_temp     = COALESCE(VALUES(neck_temp), neck_temp),
+                        local_date    = VALUES(local_date),
+                        user_timezone = VALUES(user_timezone),
+                        updated_at    = VALUES(updated_at)
                 """), {
                     "ts": day_ts,
                     "neck_temp": avg_neck_temp,
@@ -514,7 +509,7 @@ async def run_inference_cycle() -> None:
             bindings = (await db.execute(text("""
                 SELECT dbh.device_id, dbh.user_id, COALESCE(u.timezone, 'UTC') AS timezone
                 FROM pet_device.device_bind_history dbh
-                JOIN pet_device."user" u ON dbh.user_id = u.id
+                JOIN pet_device.`user` u ON dbh.user_id = u.id
                 WHERE dbh.bind_status = 1
             """))).fetchall()
         except Exception:
@@ -545,10 +540,10 @@ async def run_inference_cycle() -> None:
                 INSERT INTO device_sync_state
                     (device_id, user_id, user_timezone, last_processed_ts, last_sync_at, updated_at)
                 VALUES (:did, :uid, :tz, 0, :now, :now)
-                ON CONFLICT (device_id) DO UPDATE SET
-                    user_id       = EXCLUDED.user_id,
-                    user_timezone = EXCLUDED.user_timezone,
-                    updated_at    = EXCLUDED.updated_at
+                ON DUPLICATE KEY UPDATE
+                    user_id       = VALUES(user_id),
+                    user_timezone = VALUES(user_timezone),
+                    updated_at    = VALUES(updated_at)
             """), {"did": int(b.device_id), "uid": int(b.user_id),
                    "tz": b.timezone or "UTC", "now": now_ms})
         await db.commit()

@@ -144,25 +144,8 @@ async def _update_one(device_id: int) -> None:
         now_ms = int(time.time() * 1000)
 
         # 确保基线表存在
-        await db.execute(text(f"""
-            CREATE TABLE IF NOT EXISTS {settings.pg_schema_baseline}.pet_skin_baseline (
-                device_id        bigint        PRIMARY KEY,
-                baseline_mean    decimal(6,2)  NOT NULL DEFAULT 0,
-                baseline_std     decimal(6,2)  NOT NULL DEFAULT 0,
-                temp_coef        decimal(5,3)  NOT NULL DEFAULT 0,
-                valid_days       int           NOT NULL DEFAULT 0,
-                eval_phase       smallint      NOT NULL DEFAULT 0,
-                confidence       decimal(4,2)  NOT NULL DEFAULT 0,
-                wpeb_mean        decimal(10,4),
-                wpeb_std         decimal(10,4),
-                last_updated_ts  bigint,
-                created_at       bigint        NOT NULL
-            )
-        """))
-        await db.commit()
-
         upsert_sql = text(f"""
-            INSERT INTO {settings.pg_schema_baseline}.pet_skin_baseline
+            INSERT INTO `{settings.pg_schema_baseline}`.pet_skin_baseline
                 (device_id, baseline_mean, baseline_std, temp_coef,
                  valid_days, eval_phase, confidence,
                  wpeb_mean, wpeb_std,
@@ -172,16 +155,16 @@ async def _update_one(device_id: int) -> None:
                  :valid_days, :phase, :confidence,
                  :wpeb_mean, :wpeb_std,
                  :now_ms, :now_ms)
-            ON CONFLICT (device_id) DO UPDATE SET
-                baseline_mean    = EXCLUDED.baseline_mean,
-                baseline_std     = EXCLUDED.baseline_std,
-                temp_coef        = EXCLUDED.temp_coef,
-                valid_days       = EXCLUDED.valid_days,
-                eval_phase       = EXCLUDED.eval_phase,
-                confidence       = EXCLUDED.confidence,
-                wpeb_mean        = EXCLUDED.wpeb_mean,
-                wpeb_std         = EXCLUDED.wpeb_std,
-                last_updated_ts  = EXCLUDED.last_updated_ts
+            ON DUPLICATE KEY UPDATE
+                baseline_mean    = VALUES(baseline_mean),
+                baseline_std     = VALUES(baseline_std),
+                temp_coef        = VALUES(temp_coef),
+                valid_days       = VALUES(valid_days),
+                eval_phase       = VALUES(eval_phase),
+                confidence       = VALUES(confidence),
+                wpeb_mean        = VALUES(wpeb_mean),
+                wpeb_std         = VALUES(wpeb_std),
+                last_updated_ts  = VALUES(last_updated_ts)
         """)
         await db.execute(upsert_sql, {
             "did":        device_id,
