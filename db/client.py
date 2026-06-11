@@ -18,10 +18,14 @@ class Base(DeclarativeBase):
 
 
 async def init_db():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-        # 各业务数据库（MySQL 中 schema = database）
+    # Bootstrap：不指定数据库连接，先建好主库再切换
+    bootstrap_dsn = (
+        f"mysql+aiomysql://{settings.db_user}:{settings.db_password}"
+        f"@{settings.db_host}:{settings.db_port}/?charset=utf8mb4"
+    )
+    bootstrap = create_async_engine(bootstrap_dsn, pool_pre_ping=True)
+    async with bootstrap.begin() as conn:
+        await conn.execute(text(f"CREATE DATABASE IF NOT EXISTS `{settings.db_name}`"))
         for db_name in (
             settings.pg_schema_behavior,
             settings.pg_schema_assessment,
@@ -29,6 +33,10 @@ async def init_db():
             settings.pg_schema_baseline,
         ):
             await conn.execute(text(f"CREATE DATABASE IF NOT EXISTS `{db_name}`"))
+    await bootstrap.dispose()
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
         # 每个设备的同步断点 + 绑定用户信息
         await conn.execute(text("""
