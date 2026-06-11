@@ -6,7 +6,6 @@ from config import settings
 
 engine = create_async_engine(
     settings.db_dsn,
-    pool_pre_ping=True,
     pool_size=settings.db_pool_size,
     max_overflow=settings.db_max_overflow,
 )
@@ -23,7 +22,7 @@ async def init_db():
         f"mysql+aiomysql://{settings.db_user}:{settings.db_password}"
         f"@{settings.db_host}:{settings.db_port}/?charset=utf8mb4"
     )
-    bootstrap = create_async_engine(bootstrap_dsn, pool_pre_ping=True)
+    bootstrap = create_async_engine(bootstrap_dsn)
     async with bootstrap.begin() as conn:
         await conn.execute(text(f"CREATE DATABASE IF NOT EXISTS `{settings.db_name}`"))
         for db_name in (
