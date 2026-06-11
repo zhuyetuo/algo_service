@@ -79,15 +79,18 @@ class Settings(BaseSettings):
     pg_schema_environment: str = "pet_dog_environment"
     pg_schema_baseline: str = "pet_dog_scratch_baseline"
 
+    # 业务数据库（设备绑定、用户信息来源）
+    biz_schema: str = "hiccpet_petos"
+
     # TDengine 连接配置（REST HTTP 连接器，端口 6041）
-    td_host: str = "localhost"
+    td_host: str = "192.168.33.253"
     td_port: int = 6041
     td_user: str = "root"
     td_password: str = "taosdata"
-    td_database: str = "pet_collar_raw"
-    td_supertable: str = "imu_raw"
-    td_supertable_env: str = "env_raw"
-    td_supertable_neck_temp: str = "neck_temp_raw"
+    td_database: str = "hiccpet_device"
+    td_supertable: str = "imu_data"
+    td_supertable_env: str = "env_data"
+    td_supertable_neck_temp: str = "body_temp_data"
     # 每次从 TDengine 单设备拉取的最大行数
     td_batch_size: int = 50000
 
