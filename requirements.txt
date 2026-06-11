@@ -4,6 +4,7 @@ pydantic-settings==2.2.1
 
 # Database
 aiomysql==0.2.0
+cryptography>=42.0.0
 sqlalchemy[asyncio]==2.0.30
 
 # Scheduler
