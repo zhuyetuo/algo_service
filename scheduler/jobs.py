@@ -560,6 +560,11 @@ async def run_inference_cycle() -> None:
         await db.commit()
 
     devices = list(device_tz_map.keys())
+    logger.info(
+        "本次周期活跃设备 {} 台: {}",
+        len(devices),
+        ", ".join(f"{did}({device_sn_map.get(did, '?')})" for did in devices),
+    )
 
     # ── 2. 重试上次失败的记录 ────────────────────────────────────────────
     await _retry_pending(clf, device_tz_map, device_sn_map)
