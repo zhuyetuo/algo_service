@@ -82,7 +82,7 @@ def start_scheduler():
     _main_loop = asyncio.get_event_loop()
     _scheduler.add_job(
         _run(run_inference_cycle),
-        IntervalTrigger(minutes=settings.fetch_interval_min),
+        IntervalTrigger(seconds=settings.fetch_interval_sec),
         id="inference_cycle",
         replace_existing=True,
         max_instances=1,
@@ -106,8 +106,8 @@ def start_scheduler():
     )
     _scheduler.start()
     logger.info(
-        "调度器已启动 — 推理每 {} 分钟执行，评估 {}，基线更新 {}",
-        settings.fetch_interval_min,
+        "调度器已启动 — 推理每 {} 秒执行，评估 {}，基线更新 {}",
+        settings.fetch_interval_sec,
         settings.assessment_cron,
         settings.baseline_update_cron,
     )
@@ -496,7 +496,7 @@ async def run_inference_cycle() -> None:
     3. 逐设备同步环境 + 颈温数据
     4. 逐设备处理 IMU 数据：写行为事件，完整天触发评估
     """
-    logger.info("推理周期开始（fetch_interval={} 分钟）", settings.fetch_interval_min)
+    logger.info("推理周期开始（fetch_interval={} 秒）", settings.fetch_interval_sec)
 
     try:
         clf = get_classifier()

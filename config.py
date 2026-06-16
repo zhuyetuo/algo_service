@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     window_overlap: float = 0.5
 
     # 调度器：拉取并推理的时间间隔（分钟），可通过环境变量修改，无需重新部署
-    fetch_interval_min: int = 15
+    fetch_interval_sec: int = 900
 
     # 调度器 cron 表达式
     baseline_update_cron: str = "0 2 * * *"    # 每天 02:00 执行
