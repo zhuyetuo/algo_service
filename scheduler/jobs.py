@@ -82,7 +82,7 @@ def start_scheduler():
     _main_loop = asyncio.get_event_loop()
     _scheduler.add_job(
         _run(run_inference_cycle),
-        IntervalTrigger(minutes=settings.fetch_interval_min),
+        IntervalTrigger(seconds=settings.fetch_interval_sec),
         id="inference_cycle",
         replace_existing=True,
         max_instances=1,
@@ -106,8 +106,8 @@ def start_scheduler():
     )
     _scheduler.start()
     logger.info(
-        "调度器已启动 — 推理每 {} 分钟执行，评估 {}，基线更新 {}",
-        settings.fetch_interval_min,
+        "调度器已启动 — 推理每 {} 秒执行，评估 {}，基线更新 {}",
+        settings.fetch_interval_sec,
         settings.assessment_cron,
         settings.baseline_update_cron,
     )
@@ -426,8 +426,8 @@ async def _process_device_imu(clf, device_id: int, device_sn: str,
                                 await assess_device(db, device_id, day_ts, user_tz)
                             await _mark_success(device_id, day_ts)
                         except Exception as e:
-                            logger.exception("设备 {} 日期 {} ({}) 评估失败", device_id, day_ts,
-                                            _ts_to_local_str(day_ts, user_tz, date_only=True))
+                            logger.exception("设备 {} 日期 {} ({}) 评估失败", device_id,
+                                            day_ts, _ts_to_local_str(day_ts, user_tz, date_only=True))
                             await _record_failure(device_id, day_ts, e)
                 break
 
@@ -442,8 +442,8 @@ async def _process_device_imu(clf, device_id: int, device_sn: str,
                                 await assess_device(db, device_id, day_ts, user_tz)
                             await _mark_success(device_id, day_ts)
                         except Exception as e:
-                            logger.exception("设备 {} 日期 {} ({}) 评估失败", device_id, day_ts,
-                                            _ts_to_local_str(day_ts, user_tz, date_only=True))
+                            logger.exception("设备 {} 日期 {} ({}) 评估失败", device_id,
+                                            day_ts, _ts_to_local_str(day_ts, user_tz, date_only=True))
                             await _record_failure(device_id, day_ts, e)
                     pending_assess.discard(day_ts)
 
@@ -456,13 +456,13 @@ async def _process_device_imu(clf, device_id: int, device_sn: str,
             for day_ts, day_rows in sorted(day_groups.items()):
                 try:
                     event_count = await _write_behavior(clf, device_id, day_ts, day_rows, user_tz)
-                    logger.info("设备={} 日期={} ({}) 事件数={}", device_id, day_ts,
-                                _ts_to_local_str(day_ts, user_tz, date_only=True), event_count)
+                    logger.info("设备={} 日期={} ({}) 事件数={}", device_id,
+                                day_ts, _ts_to_local_str(day_ts, user_tz, date_only=True), event_count)
                     pending_assess.add(day_ts)
                     max_ts = max(r["ts_ms"] for r in day_rows)
                 except Exception as e:
-                    logger.exception("设备 {} 日期 {} ({}) 推理失败，已记录待重试", device_id, day_ts,
-                                    _ts_to_local_str(day_ts, user_tz, date_only=True))
+                    logger.exception("设备 {} 日期 {} ({}) 推理失败，已记录待重试", device_id,
+                                    day_ts, _ts_to_local_str(day_ts, user_tz, date_only=True))
                     await _record_failure(device_id, day_ts, e)
                     failed = True
                     break
@@ -496,7 +496,7 @@ async def run_inference_cycle() -> None:
     3. 逐设备同步环境 + 颈温数据
     4. 逐设备处理 IMU 数据：写行为事件，完整天触发评估
     """
-    logger.info("推理周期开始（fetch_interval={} 分钟）", settings.fetch_interval_min)
+    logger.info("推理周期开始（fetch_interval={} 秒）", settings.fetch_interval_sec)
 
     try:
         clf = get_classifier()
@@ -560,6 +560,7 @@ async def run_inference_cycle() -> None:
         await db.commit()
 
     devices = list(device_tz_map.keys())
+    logger.info("本次周期活跃设备 {} 台: {}", len(devices), ", ".join(str(d) for d in devices))
 
     # ── 2. 重试上次失败的记录 ────────────────────────────────────────────
     await _retry_pending(clf, device_tz_map, device_sn_map)
