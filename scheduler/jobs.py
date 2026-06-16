@@ -388,10 +388,10 @@ async def _sync_env_for_device(device_id: int, device_sn: str,
         last_neck_temp_ts = new_neck_ts
 
     if total_env or total_neck:
-        logger.info("环境数据同步 设备={}({}) env={} 条 neck_temp={} 条 天数={}",
-                    device_id, device_sn, total_env, total_neck, total_days)
+        logger.info("环境数据同步 设备={} env={} 条 neck_temp={} 条 天数={}",
+                    device_id, total_env, total_neck, total_days)
     else:
-        logger.info("设备 {}({}) 环境/体温数据无更新，跳过", device_id, device_sn)
+        logger.info("设备 {} 环境/体温数据无更新，跳过", device_id)
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +418,7 @@ async def _process_device_imu(clf, device_id: int, device_sn: str,
 
             if not imu_rows:
                 if not any_data:
-                    logger.info("设备 {}({}) 数据无更新，跳过本次推理", device_id, device_sn)
+                    logger.info("设备 {} 数据无更新，跳过本次推理", device_id)
                 for day_ts in sorted(pending_assess):
                     if day_ts < today_ts:
                         try:
@@ -426,7 +426,7 @@ async def _process_device_imu(clf, device_id: int, device_sn: str,
                                 await assess_device(db, device_id, day_ts, user_tz)
                             await _mark_success(device_id, day_ts)
                         except Exception as e:
-                            logger.exception("设备 {}({}) 日期 {} ({}) 评估失败", device_id, device_sn,
+                            logger.exception("设备 {} 日期 {} ({}) 评估失败", device_id,
                                             day_ts, _ts_to_local_str(day_ts, user_tz, date_only=True))
                             await _record_failure(device_id, day_ts, e)
                 break
@@ -442,7 +442,7 @@ async def _process_device_imu(clf, device_id: int, device_sn: str,
                                 await assess_device(db, device_id, day_ts, user_tz)
                             await _mark_success(device_id, day_ts)
                         except Exception as e:
-                            logger.exception("设备 {}({}) 日期 {} ({}) 评估失败", device_id, device_sn,
+                            logger.exception("设备 {} 日期 {} ({}) 评估失败", device_id,
                                             day_ts, _ts_to_local_str(day_ts, user_tz, date_only=True))
                             await _record_failure(device_id, day_ts, e)
                     pending_assess.discard(day_ts)
@@ -456,12 +456,12 @@ async def _process_device_imu(clf, device_id: int, device_sn: str,
             for day_ts, day_rows in sorted(day_groups.items()):
                 try:
                     event_count = await _write_behavior(clf, device_id, day_ts, day_rows, user_tz)
-                    logger.info("设备={}({}) 日期={} ({}) 事件数={}", device_id, device_sn,
+                    logger.info("设备={} 日期={} ({}) 事件数={}", device_id,
                                 day_ts, _ts_to_local_str(day_ts, user_tz, date_only=True), event_count)
                     pending_assess.add(day_ts)
                     max_ts = max(r["ts_ms"] for r in day_rows)
                 except Exception as e:
-                    logger.exception("设备 {}({}) 日期 {} ({}) 推理失败，已记录待重试", device_id, device_sn,
+                    logger.exception("设备 {} 日期 {} ({}) 推理失败，已记录待重试", device_id,
                                     day_ts, _ts_to_local_str(day_ts, user_tz, date_only=True))
                     await _record_failure(device_id, day_ts, e)
                     failed = True
@@ -481,7 +481,7 @@ async def _process_device_imu(clf, device_id: int, device_sn: str,
                 break
 
     except Exception:
-        logger.exception("设备 {}({}) 推理周期失败", device_id, device_sn)
+        logger.exception("设备 {} 推理周期失败", device_id)
 
 
 # ---------------------------------------------------------------------------
@@ -560,11 +560,7 @@ async def run_inference_cycle() -> None:
         await db.commit()
 
     devices = list(device_tz_map.keys())
-    logger.info(
-        "本次周期活跃设备 {} 台: {}",
-        len(devices),
-        ", ".join(f"{did}({device_sn_map.get(did, '?')})" for did in devices),
-    )
+    logger.info("本次周期活跃设备 {} 台: {}", len(devices), ", ".join(str(d) for d in devices))
 
     # ── 2. 重试上次失败的记录 ────────────────────────────────────────────
     await _retry_pending(clf, device_tz_map, device_sn_map)
