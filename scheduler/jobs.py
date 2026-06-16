@@ -25,7 +25,7 @@ from loguru import logger
 
 from config import settings
 from db.client import AsyncSessionLocal
-from db.tdengine import td_fetch, td_fetch_env, td_fetch_neck_temp
+from db.tdengine import td_fetch, td_fetch_env, td_fetch_neck_temp, td_is_charging
 from modules.baseline.updater import run_baseline_update
 from modules.assessment.evaluator import run_batch_assessment, assess_device
 from modules.inference.model import BehaviorLabel, get_classifier
@@ -403,6 +403,10 @@ async def _process_device_imu(clf, device_id: int, device_sn: str,
     """拉取并推理单台设备的 IMU 新数据，写入行为事件并触发评估。"""
     today_ts = _day_start_utc_ms(now_ms, user_tz)
     try:
+        is_charging = await asyncio.to_thread(td_is_charging, device_sn)
+        if is_charging:
+            logger.info("设备 {} 充电中，跳过本次推理", device_id)
+            return
         async with AsyncSessionLocal() as db:
             row = (await db.execute(text("""
                 SELECT last_processed_ts FROM device_sync_state WHERE device_id = :did

@@ -94,6 +94,23 @@ def td_fetch_neck_temp(device_sn: str, last_ts_ms: int) -> list[dict]:
         conn.close()
 
 
+def td_is_charging(device_sn: str) -> bool:
+    """查询设备当前是否处于充电状态（取最新一条 charging 记录）。"""
+    conn = _get_conn()
+    try:
+        cursor = conn.cursor()
+        table = f"{settings.td_database}.{settings.td_supertable_battery}"
+        cursor.execute(f"""
+            SELECT LAST(charging)
+            FROM {table}
+            WHERE device_sn = '{device_sn}'
+        """)
+        row = cursor.fetchone()
+        return bool(row and row[0] == 1)
+    finally:
+        conn.close()
+
+
 def td_fetch(device_sn: str, last_ts_ms: int) -> list[dict]:
     """从 TDengine 拉取指定设备在 last_ts_ms 之后的新 IMU 数据。"""
     conn = _get_conn()

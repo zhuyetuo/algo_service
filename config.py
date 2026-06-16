@@ -91,6 +91,7 @@ class Settings(BaseSettings):
     td_supertable: str = "imu_data"
     td_supertable_env: str = "env_data"
     td_supertable_neck_temp: str = "body_temp_data"
+    td_supertable_battery: str = "battery_data"
     # 每次从 TDengine 单设备拉取的最大行数
     td_batch_size: int = 50000
 
