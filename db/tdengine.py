@@ -42,40 +42,13 @@ def td_get_devices() -> list[str]:
 
 
 def td_fetch_env(device_sn: str, last_ts_ms: int) -> list[dict]:
-    """从 env_data 拉取指定设备在 last_ts_ms 之后的环境数据。"""
+    """从 env_data 拉取指定设备在 last_ts_ms 之后的环境数据（温湿度 + 体温）。"""
     conn = _get_conn()
     try:
         cursor = conn.cursor()
         table = f"{settings.td_database}.{settings.td_supertable_env}"
         cursor.execute(f"""
-            SELECT ts, temperature, humidity
-            FROM {table}
-            WHERE device_sn = '{device_sn}'
-              AND ts > {last_ts_ms}
-            ORDER BY ts
-            LIMIT {settings.td_batch_size}
-        """)
-        rows = cursor.fetchall()
-        return [
-            {
-                "ts_ms":    _ts_to_ms(r[0]),
-                "env_temp": float(r[1]) if r[1] is not None else None,
-                "env_humi": float(r[2]) if r[2] is not None else None,
-            }
-            for r in rows
-        ]
-    finally:
-        conn.close()
-
-
-def td_fetch_neck_temp(device_sn: str, last_ts_ms: int) -> list[dict]:
-    """从 body_temp_data 拉取指定设备在 last_ts_ms 之后的体温数据。"""
-    conn = _get_conn()
-    try:
-        cursor = conn.cursor()
-        table = f"{settings.td_database}.{settings.td_supertable_neck_temp}"
-        cursor.execute(f"""
-            SELECT ts, temp
+            SELECT ts, temperature, humidity, body_temp
             FROM {table}
             WHERE device_sn = '{device_sn}'
               AND ts > {last_ts_ms}
@@ -86,12 +59,19 @@ def td_fetch_neck_temp(device_sn: str, last_ts_ms: int) -> list[dict]:
         return [
             {
                 "ts_ms":     _ts_to_ms(r[0]),
-                "neck_temp": float(r[1]) if r[1] is not None else None,
+                "env_temp":  float(r[1]) if r[1] is not None else None,
+                "env_humi":  float(r[2]) if r[2] is not None else None,
+                "neck_temp": float(r[3]) if r[3] is not None else None,
             }
             for r in rows
         ]
     finally:
         conn.close()
+
+
+def td_fetch_neck_temp(device_sn: str, last_ts_ms: int) -> list[dict]:
+    """已废弃：体温数据已合并入 env_data，请使用 td_fetch_env。"""
+    return td_fetch_env(device_sn, last_ts_ms)
 
 
 def td_is_charging(device_sn: str) -> bool:
