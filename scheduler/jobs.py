@@ -25,7 +25,7 @@ from loguru import logger
 
 from config import settings
 from db.client import AsyncSessionLocal
-from db.tdengine import td_fetch, td_fetch_env, td_fetch_neck_temp
+from db.tdengine import td_fetch, td_fetch_env
 from modules.baseline.updater import run_baseline_update
 from modules.assessment.evaluator import run_batch_assessment, assess_device
 from modules.inference.model import BehaviorLabel, get_classifier
@@ -263,16 +263,14 @@ async def _process_day(clf, device_id: int, day_ts: int,
 
 async def _sync_env_for_device(device_id: int, device_sn: str,
                                user_timezone: str | None) -> None:
-    """从 TDengine 拉取环境和颈温数据，按本地日期聚合后写入 pet_dog_environment.d_{device_id}。"""
+    """从 TDengine env_data 拉取环境数据（温湿度 + 体温），按本地日期聚合后写入 pet_dog_environment.d_{device_id}。"""
     tbl = f"{settings.pg_schema_environment}.d_{device_id}"
 
     async with AsyncSessionLocal() as db:
         row = (await db.execute(text("""
-            SELECT last_env_ts, last_neck_temp_ts
-            FROM device_sync_state WHERE device_id = :did
+            SELECT last_env_ts FROM device_sync_state WHERE device_id = :did
         """), {"did": device_id})).fetchone()
-    last_env_ts       = int(row.last_env_ts)       if row else 0
-    last_neck_temp_ts = int(row.last_neck_temp_ts) if row else 0
+    last_env_ts = int(row.last_env_ts) if row else 0
 
     def _group_by_day(rows, value_keys):
         groups: dict[int, dict[str, list]] = {}
@@ -300,37 +298,38 @@ async def _sync_env_for_device(device_id: int, device_sn: str,
         """))
         await db.commit()
 
-    total_env = total_neck = total_days = 0
+    total_rows = total_days = 0
 
     while True:
         env_rows = await asyncio.to_thread(td_fetch_env, device_sn, last_env_ts)
         if not env_rows:
             break
-        env_by_day = _group_by_day(env_rows, ["env_temp", "env_humi"])
+        by_day = _group_by_day(env_rows, ["env_temp", "env_humi", "neck_temp"])
         now_ms = int(time.time() * 1000)
         async with AsyncSessionLocal() as db:
-            for day_ts, env_d in env_by_day.items():
-                avg_env_temp = round(sum(env_d["env_temp"]) / len(env_d["env_temp"]), 2) \
-                               if env_d.get("env_temp") else None
-                avg_env_humi = round(sum(env_d["env_humi"]) / len(env_d["env_humi"]), 1) \
-                               if env_d.get("env_humi") else None
+            for day_ts, d in by_day.items():
+                avg_env_temp  = round(sum(d["env_temp"])  / len(d["env_temp"]),  2) if d.get("env_temp")  else None
+                avg_env_humi  = round(sum(d["env_humi"])  / len(d["env_humi"]),  1) if d.get("env_humi")  else None
+                avg_neck_temp = round(sum(d["neck_temp"]) / len(d["neck_temp"]), 2) if d.get("neck_temp") else None
                 await db.execute(text(f"""
                     INSERT INTO {tbl}
                         (ts, env_temp, env_humidity, neck_temp,
                          local_date, user_timezone, created_at, updated_at)
                     VALUES
-                        (:ts, :env_temp, :env_humi, NULL,
+                        (:ts, :env_temp, :env_humi, :neck_temp,
                          :local_date, :tz, :now, :now)
                     ON DUPLICATE KEY UPDATE
                         env_temp      = COALESCE(VALUES(env_temp),     env_temp),
                         env_humidity  = COALESCE(VALUES(env_humidity), env_humidity),
+                        neck_temp     = COALESCE(VALUES(neck_temp),    neck_temp),
                         local_date    = VALUES(local_date),
                         user_timezone = VALUES(user_timezone),
                         updated_at    = VALUES(updated_at)
                 """), {
                     "ts": day_ts,
-                    "env_temp": avg_env_temp,
-                    "env_humi": avg_env_humi,
+                    "env_temp":  avg_env_temp,
+                    "env_humi":  avg_env_humi,
+                    "neck_temp": avg_neck_temp,
                     "local_date": _ts_to_local_str(day_ts, user_timezone, date_only=True),
                     "tz": user_timezone or "UTC",
                     "now": now_ms,
@@ -343,53 +342,13 @@ async def _sync_env_for_device(device_id: int, device_sn: str,
                 WHERE device_id = :did
             """), {"val": new_env_ts, "now": now_ms, "did": device_id})
             await db.commit()
-        total_env += len(env_rows)
-        total_days += len(env_by_day)
+        total_rows += len(env_rows)
+        total_days += len(by_day)
         last_env_ts = new_env_ts
 
-    while True:
-        neck_rows = await asyncio.to_thread(td_fetch_neck_temp, device_sn, last_neck_temp_ts)
-        if not neck_rows:
-            break
-        neck_by_day = _group_by_day(neck_rows, ["neck_temp"])
-        now_ms = int(time.time() * 1000)
-        async with AsyncSessionLocal() as db:
-            for day_ts, neck_d in neck_by_day.items():
-                avg_neck_temp = round(sum(neck_d["neck_temp"]) / len(neck_d["neck_temp"]), 2) \
-                                if neck_d.get("neck_temp") else None
-                await db.execute(text(f"""
-                    INSERT INTO {tbl}
-                        (ts, env_temp, env_humidity, neck_temp,
-                         local_date, user_timezone, created_at, updated_at)
-                    VALUES
-                        (:ts, NULL, NULL, :neck_temp,
-                         :local_date, :tz, :now, :now)
-                    ON DUPLICATE KEY UPDATE
-                        neck_temp     = COALESCE(VALUES(neck_temp), neck_temp),
-                        local_date    = VALUES(local_date),
-                        user_timezone = VALUES(user_timezone),
-                        updated_at    = VALUES(updated_at)
-                """), {
-                    "ts": day_ts,
-                    "neck_temp": avg_neck_temp,
-                    "local_date": _ts_to_local_str(day_ts, user_timezone, date_only=True),
-                    "tz": user_timezone or "UTC",
-                    "now": now_ms,
-                })
-            await db.commit()
-        new_neck_ts = max(r["ts_ms"] for r in neck_rows)
-        async with AsyncSessionLocal() as db:
-            await db.execute(text("""
-                UPDATE device_sync_state SET last_neck_temp_ts = :val, updated_at = :now
-                WHERE device_id = :did
-            """), {"val": new_neck_ts, "now": now_ms, "did": device_id})
-            await db.commit()
-        total_neck += len(neck_rows)
-        last_neck_temp_ts = new_neck_ts
-
-    if total_env or total_neck:
-        logger.info("环境数据同步 设备={} env={} 条 neck_temp={} 条 天数={}",
-                    device_id, total_env, total_neck, total_days)
+    if total_rows:
+        logger.info("环境数据同步 设备={} 共 {} 条 天数={}",
+                    device_id, total_rows, total_days)
     else:
         logger.info("设备 {} 环境/体温数据无更新，跳过", device_id)
 
