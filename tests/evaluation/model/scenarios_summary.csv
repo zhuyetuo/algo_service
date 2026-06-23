@@ -1,17 +1,9 @@
-# 场景汇总表
-# 字段说明：
-#   scenario       场景名称
-#   type           seen=训练集内场景 / unseen=训练集外场景（泛化能力测试）
-#   samples        测试样本数（滑动窗口数量，每窗口 3 秒）
-#   accuracy       准确率：所有类别预测正确的样本占总样本的比例，范围 0~1
-#   scratch_precision  抓挠精确率：模型预测为"抓挠"的窗口中，实际确实是抓挠的比例
-#   scratch_recall     抓挠召回率：所有真实抓挠窗口中，被模型正确识别出来的比例
-#   scratch_f1         抓挠 F1 分数：精确率和召回率的调和平均，综合衡量抓挠检测能力
-#
-# ⚠️  当前数据为合成数据评估结果，替换真实数据时请重新运行评估脚本并覆盖本文件
-scenario,type,samples,accuracy,scratch_precision,scratch_recall,scratch_f1
-S1_Normal,seen,25850,1.0000,1.000,1.000,1.000
-S2_Active,seen,25263,1.0000,1.000,1.000,1.000
-S3_Calm,seen,26119,1.0000,1.000,1.000,1.000
-S4_Mild_skin,unseen,23941,1.0000,1.000,1.000,1.000
-S5_Severe_skin,unseen,22288,1.0000,1.000,1.000,1.000
+# 各场景整体准确率汇总
+# scenario=场景名称  type=训练内/训练外  n_samples=样本数
+# accuracy=整体准确率  scratch_precision=抓挠精确率  scratch_recall=抓挠召回率  scratch_f1=抓挠F1
+scenario,type,n_samples,accuracy,scratch_precision,scratch_recall,scratch_f1
+S1 Normal,训练内,26055,1.0,1.0,1.0,1.0
+S2 Active,训练内,26065,1.0,1.0,1.0,1.0
+S3 Calm,训练内,25474,1.0,1.0,1.0,1.0
+S4 Mild skin,训练外,24768,1.0,1.0,1.0,1.0
+S5 Severe skin,训练外,22268,1.0,1.0,1.0,1.0
