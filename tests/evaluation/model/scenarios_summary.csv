@@ -3,7 +3,12 @@
 # accuracy=整体准确率  scratch_precision=抓挠精确率  scratch_recall=抓挠召回率  scratch_f1=抓挠F1
 scenario,type,n_samples,accuracy,scratch_precision,scratch_recall,scratch_f1
 S1 Normal,训练内,26055,1.0,1.0,1.0,1.0
-S2 Active,训练内,26065,1.0,1.0,1.0,1.0
-S3 Calm,训练内,25474,1.0,1.0,1.0,1.0
-S4 Mild skin,训练外,24768,1.0,1.0,1.0,1.0
-S5 Severe skin,训练外,22268,1.0,1.0,1.0,1.0
+S1 Normal,训练外,26050,1.0,1.0,1.0,1.0
+S2 Active,训练内,25551,1.0,1.0,1.0,1.0
+S2 Active,训练外,25392,1.0,1.0,1.0,1.0
+S3 Calm,训练内,24898,1.0,1.0,1.0,1.0
+S3 Calm,训练外,25641,1.0,1.0,1.0,1.0
+S4 Mild skin,训练内,23636,1.0,1.0,1.0,1.0
+S4 Mild skin,训练外,23823,1.0,1.0,1.0,1.0
+S5 Severe skin,训练内,22344,1.0,1.0,1.0,1.0
+S5 Severe skin,训练外,22854,1.0,1.0,1.0,1.0
