@@ -1,0 +1,17 @@
+# 数据写入验证
+# 字段说明：
+#   check_item    验证项目名称
+#   table         对应的 MySQL 数据库表（格式：database.table）
+#   description   该表存储的数据含义说明
+#   has_data      是否有数据写入：yes=已写入 / no=无数据
+#   sample_count  抽查的记录条数（-1 表示未检查）
+#   result        验证结论：pass=通过 / fail=失败 / skip=跳过
+#   notes         备注信息（如实际检查的 device_id、数据时间范围等）
+#
+# ⚠️  请在服务运行一个周期后，对照数据库实际情况填写 has_data / sample_count / result / notes
+check_item,table,description,has_data,sample_count,result,notes
+同步断点记录,algo.device_sync_state,记录每台设备的数据处理进度（断点时间戳）和设备基本信息,yes,2,pass,设备 70 和 72 均有记录
+行为事件写入,pet_dog_behavior.d_70,设备 70 的行为识别结果（运动/睡眠/抓挠），含本地时间和用户时区,yes,2,pass,含 local_start、user_timezone 字段
+环境数据写入,pet_dog_environment.d_70,设备 70 的每日环境数据（温度、湿度、体温）按天聚合均值,yes,2,pass,temperature 和 humidity 正常，body_temp 待设备上报
+皮肤评估结果,pet_dog_skin_assessment.d_70,设备 70 的每日皮肤健康评分和告警等级,no,-1,skip,需要累计足够天数数据后触发评估（预热期 ≥3 天）
+个体基线数据,pet_dog_scratch_baseline.pet_skin_baseline,设备的抓挠行为基线（均值、标准差、温度修正系数）,no,-1,skip,每日凌晨 02:00 触发，需要历史数据积累

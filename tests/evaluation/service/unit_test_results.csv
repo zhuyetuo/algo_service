@@ -1,0 +1,16 @@
+# 单元测试结果
+# 字段说明：
+#   module        测试模块文件名
+#   description   测试模块覆盖的功能说明
+#   total         该模块总测试用例数
+#   passed        通过数量
+#   failed        失败数量
+#   pass_rate     通过率（passed / total）
+#
+# ⚠️  每次运行 docker exec algo_service python -m pytest tests/unit/ -v 后请更新本文件
+module,description,total,passed,failed,pass_rate
+test_api_health,健康检查接口（/health）- MySQL 和 TDengine 连接状态验证,3,3,0,1.000
+test_baseline_algorithm,基线算法 - EWMA 更新、权重分配、置信度计算,5,5,0,1.000
+test_evaluator_scoring,评估评分函数 - 各维度得分计算、阈值判断、告警分级,42,42,0,1.000
+test_inference_model,推理模型 - 特征提取、滑动窗口分割、行为事件合并,13,13,0,1.000
+test_tdengine_helpers,TDengine 工具函数 - 时间戳转换、数据拉取 mock 验证,4,4,0,1.000

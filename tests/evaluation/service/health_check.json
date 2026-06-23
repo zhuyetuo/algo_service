@@ -1,0 +1,16 @@
+{
+  "_comment": "健康检查接口返回结果，通过 curl http://localhost:8000/health 获取",
+  "_fields": {
+    "status": "整体状态：ok=全部正常 / degraded=部分异常",
+    "mysql": "MySQL 数据库连接状态：ok=连接正常，失败时显示具体错误信息",
+    "tdengine": "TDengine 时序数据库连接状态：ok=连接正常，失败时显示具体错误信息"
+  },
+  "_note": "⚠️ 请在服务运行时执行 curl 命令并将返回结果替换下方 result 字段",
+  "test_time": "2026-06-23",
+  "endpoint": "http://localhost:8000/health",
+  "result": {
+    "status": "ok",
+    "mysql": "ok",
+    "tdengine": "ok"
+  }
+}
