@@ -36,7 +36,7 @@ def td_get_devices() -> list[str]:
         cursor = conn.cursor()
         cursor.execute(f"SELECT DISTINCT device_sn FROM {_table()}")
         rows = cursor.fetchall()
-        return [str(r[0]) for r in rows]
+        return [str(r[0]).strip() for r in rows]
     finally:
         conn.close()
 

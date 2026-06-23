@@ -53,7 +53,7 @@ class TestHealthEndpoint:
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "ok"
-        assert body["postgres"] == "ok"
+        assert body["mysql"] == "ok"
         assert body["tdengine"] == "ok"
 
     def test_health_postgres_down(self, client):
@@ -74,7 +74,7 @@ class TestHealthEndpoint:
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "degraded"
-        assert body["postgres"] != "ok"
+        assert body["mysql"] != "ok"
 
     def test_health_tdengine_down(self, client):
         mock_cm = _make_session_mock()
