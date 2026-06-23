@@ -75,44 +75,61 @@ SCENARIOS = {
 # ---------------------------------------------------------------------------
 
 def _movement_window() -> np.ndarray:
-    t    = np.arange(WIN_SAMPLES) / FS
-    freq = RNG.uniform(1.5, 2.5)
-    amp  = RNG.uniform(0.4, 0.8)
-    phi  = RNG.uniform(0, 2 * np.pi)
-    ax = amp * np.sin(2 * np.pi * freq * t + phi)           + RNG.normal(0, 0.05, WIN_SAMPLES)
-    ay = amp * 0.6 * np.sin(2 * np.pi * freq * t + phi+0.5) + RNG.normal(0, 0.04, WIN_SAMPLES)
-    az = 9.8 + amp * 0.5 * np.sin(2 * np.pi * freq * t)    + RNG.normal(0, 0.06, WIN_SAMPLES)
-    gx = amp * 0.5 * np.sin(2 * np.pi * freq * t)           + RNG.normal(0, 0.03, WIN_SAMPLES)
-    gy = amp * 0.4 * np.cos(2 * np.pi * freq * t)           + RNG.normal(0, 0.03, WIN_SAMPLES)
-    gz = RNG.normal(0, 0.02, WIN_SAMPLES)
+    """Walking / running: mid-freq stride oscillation, device tilted on active collar."""
+    n    = WIN_SAMPLES
+    t    = np.arange(n) / FS
+    ax_m = RNG.uniform(-4.8, -3.5)
+    ay_m = RNG.uniform(-7.6, -6.8)
+    az_m = RNG.uniform(-4.4, -3.6)
+    freq  = RNG.uniform(1.5, 2.5)
+    phi   = RNG.uniform(0, 2 * np.pi)
+    a_amp = RNG.uniform(0.25, 0.55)
+    g_amp = RNG.uniform(0.12, 0.35)
+    ax = ax_m + a_amp * np.sin(2 * np.pi * freq * t + phi)              + RNG.normal(0, 0.05, n)
+    ay = ay_m + a_amp * 0.7 * np.sin(2 * np.pi * freq * t + phi + 0.5) + RNG.normal(0, 0.05, n)
+    az = az_m + a_amp * 0.5 * np.sin(2 * np.pi * freq * t)              + RNG.normal(0, 0.06, n)
+    gx = g_amp * np.sin(2 * np.pi * freq * t)                           + RNG.normal(0, 0.03, n)
+    gy = g_amp * 0.6 * np.cos(2 * np.pi * freq * t)                     + RNG.normal(0, 0.025, n)
+    gz = g_amp * 0.8 * np.sin(2 * np.pi * freq * t + np.pi / 3)         + RNG.normal(0, 0.03, n)
     return np.column_stack([ax, ay, az, gx, gy, gz]).astype(np.float32)
 
 
 def _sleep_window() -> np.ndarray:
-    t     = np.arange(WIN_SAMPLES) / FS
+    """Resting / sleeping: near-static, gravity mostly on Z axis."""
+    n     = WIN_SAMPLES
+    t     = np.arange(n) / FS
     bfreq = RNG.uniform(0.2, 0.4)
-    ax = 0.02 * np.sin(2 * np.pi * bfreq * t) + RNG.normal(0, 0.008, WIN_SAMPLES)
-    ay = RNG.normal(0, 0.008, WIN_SAMPLES)
-    az = 9.8 + 0.03 * np.sin(2 * np.pi * bfreq * t) + RNG.normal(0, 0.008, WIN_SAMPLES)
-    gx = RNG.normal(0, 0.004, WIN_SAMPLES)
-    gy = RNG.normal(0, 0.004, WIN_SAMPLES)
-    gz = RNG.normal(0, 0.004, WIN_SAMPLES)
+    ax_b  = RNG.normal(0.125, 0.010)
+    ay_b  = RNG.normal(1.163, 0.015)
+    az_b  = RNG.normal(8.635, 0.025)
+    ax = ax_b + 0.005 * np.sin(2 * np.pi * bfreq * t) + RNG.normal(0, 0.008, n)
+    ay = ay_b + 0.008 * np.sin(2 * np.pi * bfreq * t) + RNG.normal(0, 0.010, n)
+    az = az_b + 0.015 * np.sin(2 * np.pi * bfreq * t) + RNG.normal(0, 0.020, n)
+    gx = 0.031 + RNG.normal(0, 0.001, n)
+    gy = 0.012 + RNG.normal(0, 0.001, n)
+    gz = 0.002 + RNG.normal(0, 0.001, n)
     return np.column_stack([ax, ay, az, gx, gy, gz]).astype(np.float32)
 
 
 def _scratch_window() -> np.ndarray:
-    t    = np.arange(WIN_SAMPLES) / FS
+    """Scratching: rest-like orientation + high-frequency limb oscillation (4-8 Hz)."""
+    n    = WIN_SAMPLES
+    t    = np.arange(n) / FS
     freq = RNG.uniform(4.0, 8.0)
-    amp  = RNG.uniform(1.5, 3.0)
+    amp  = RNG.uniform(1.0, 2.5)
+    g_amp = RNG.uniform(0.3, 0.9)
+    ax_b  = RNG.normal(0.125, 0.015)
+    ay_b  = RNG.normal(1.163, 0.020)
+    az_b  = RNG.normal(8.635, 0.030)
     dom  = RNG.integers(0, 3)
     amps = [0.25 * amp] * 3
     amps[dom] = amp
-    ax = amps[0] * np.sin(2 * np.pi * freq * t)           + RNG.normal(0, 0.1, WIN_SAMPLES)
-    ay = amps[1] * np.sin(2 * np.pi * freq * t + np.pi/4) + RNG.normal(0, 0.1, WIN_SAMPLES)
-    az = 9.8 + amps[2] * np.sin(2 * np.pi * freq * t)    + RNG.normal(0, 0.1, WIN_SAMPLES)
-    gx = 0.6 * amp * np.sin(2 * np.pi * freq * t)         + RNG.normal(0, 0.05, WIN_SAMPLES)
-    gy = 0.5 * amp * np.cos(2 * np.pi * freq * t)         + RNG.normal(0, 0.05, WIN_SAMPLES)
-    gz = 0.3 * amp * np.sin(2 * np.pi * freq * t+np.pi/3) + RNG.normal(0, 0.05, WIN_SAMPLES)
+    ax = ax_b + amps[0] * np.sin(2 * np.pi * freq * t)           + RNG.normal(0, 0.08, n)
+    ay = ay_b + amps[1] * np.sin(2 * np.pi * freq * t + np.pi/4) + RNG.normal(0, 0.08, n)
+    az = az_b + amps[2] * np.sin(2 * np.pi * freq * t)           + RNG.normal(0, 0.10, n)
+    gx = g_amp * np.sin(2 * np.pi * freq * t)                    + RNG.normal(0, 0.05, n)
+    gy = g_amp * 0.7 * np.cos(2 * np.pi * freq * t)              + RNG.normal(0, 0.04, n)
+    gz = g_amp * 0.5 * np.sin(2 * np.pi * freq * t + np.pi / 3)  + RNG.normal(0, 0.04, n)
     return np.column_stack([ax, ay, az, gx, gy, gz]).astype(np.float32)
 
 

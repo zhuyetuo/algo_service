@@ -89,50 +89,71 @@ _LABEL_STR_TO_INT = {v: k for k, v in CLASS_NAMES.items()}
 
 
 # ── IMU signal generators ─────────────────────────────────────────────────────
+# Calibrated against real sensor data collected at 50 Hz from a pet collar device.
+#
+# REST reference  (88fa25b7): AX≈+0.13 AY≈+1.16 AZ≈+8.63 m/s²  GX≈0.031 GY≈0.012 GZ≈0.002 rad/s
+# ACTIVITY ref    (a06d2116): AX≈-4.0  AY≈-7.2  AZ≈-4.1  m/s²  GX/GZ vary ±0.3-0.4 rad/s
+# (Different AZ bias reflects the collar shifting between lying-down and active postures.)
 
 def _movement_window() -> np.ndarray:
+    """Walking / running: mid-freq stride oscillation, device tilted on active collar."""
     n = WIN_SAMPLES
     t = np.arange(n) / FS
-    freq  = RNG.uniform(1.5, 2.5)
+    # Realistic mean accel when dog is active (collar hangs at ~45° angle)
+    ax_m = RNG.uniform(-4.8, -3.5)
+    ay_m = RNG.uniform(-7.6, -6.8)
+    az_m = RNG.uniform(-4.4, -3.6)
+    freq  = RNG.uniform(1.5, 2.5)   # stride frequency
     phi   = RNG.uniform(0, 2 * np.pi)
-    a_amp = RNG.uniform(0.4, 0.8)
-    g_amp = RNG.uniform(0.2, 0.5)
-    ax = a_amp * np.sin(2 * np.pi * freq * t + phi)            + RNG.normal(0, 0.05, n)
-    ay = a_amp * 0.6 * np.sin(2 * np.pi * freq * t + phi + 0.5) + RNG.normal(0, 0.04, n)
-    az = 9.8 + a_amp * 0.5 * np.sin(2 * np.pi * freq * t)     + RNG.normal(0, 0.06, n)
-    gx = g_amp * np.sin(2 * np.pi * freq * t)                  + RNG.normal(0, 0.03, n)
-    gy = g_amp * 0.8 * np.cos(2 * np.pi * freq * t)            + RNG.normal(0, 0.03, n)
-    gz = RNG.normal(0, 0.02, n)
+    a_amp = RNG.uniform(0.25, 0.55)  # oscillation amplitude (m/s²)
+    g_amp = RNG.uniform(0.12, 0.35)  # gyro amplitude (rad/s)
+    ax = ax_m + a_amp * np.sin(2 * np.pi * freq * t + phi)             + RNG.normal(0, 0.05, n)
+    ay = ay_m + a_amp * 0.7 * np.sin(2 * np.pi * freq * t + phi + 0.5) + RNG.normal(0, 0.05, n)
+    az = az_m + a_amp * 0.5 * np.sin(2 * np.pi * freq * t)             + RNG.normal(0, 0.06, n)
+    gx = g_amp * np.sin(2 * np.pi * freq * t)                          + RNG.normal(0, 0.03, n)
+    gy = g_amp * 0.6 * np.cos(2 * np.pi * freq * t)                    + RNG.normal(0, 0.025, n)
+    gz = g_amp * 0.8 * np.sin(2 * np.pi * freq * t + np.pi / 3)        + RNG.normal(0, 0.03, n)
     return np.column_stack([ax, ay, az, gx, gy, gz]).astype(np.float32)
 
 
 def _sleep_window() -> np.ndarray:
+    """Resting / sleeping: near-static, gravity mostly on Z axis, minimal gyro."""
     n     = WIN_SAMPLES
     t     = np.arange(n) / FS
-    bfreq = RNG.uniform(0.2, 0.4)
-    ax = 0.02 * np.sin(2 * np.pi * bfreq * t) + RNG.normal(0, 0.008, n)
-    ay = RNG.normal(0, 0.008, n)
-    az = 9.8 + 0.03 * np.sin(2 * np.pi * bfreq * t) + RNG.normal(0, 0.008, n)
-    gx = RNG.normal(0, 0.004, n)
-    gy = RNG.normal(0, 0.004, n)
-    gz = RNG.normal(0, 0.004, n)
+    bfreq = RNG.uniform(0.2, 0.4)   # breathing oscillation
+    # Realistic mean accel when dog lies down (collar roughly flat)
+    ax_b = RNG.normal(0.125, 0.010)
+    ay_b = RNG.normal(1.163, 0.015)
+    az_b = RNG.normal(8.635, 0.025)
+    ax = ax_b + 0.005 * np.sin(2 * np.pi * bfreq * t) + RNG.normal(0, 0.008, n)
+    ay = ay_b + 0.008 * np.sin(2 * np.pi * bfreq * t) + RNG.normal(0, 0.010, n)
+    az = az_b + 0.015 * np.sin(2 * np.pi * bfreq * t) + RNG.normal(0, 0.020, n)
+    gx = 0.031 + RNG.normal(0, 0.001, n)
+    gy = 0.012 + RNG.normal(0, 0.001, n)
+    gz = 0.002 + RNG.normal(0, 0.001, n)
     return np.column_stack([ax, ay, az, gx, gy, gz]).astype(np.float32)
 
 
 def _scratch_window() -> np.ndarray:
+    """Scratching: rest-like orientation + high-frequency limb oscillation (4-8 Hz)."""
     n     = WIN_SAMPLES
     t     = np.arange(n) / FS
-    freq  = RNG.uniform(4.0, 8.0)
-    amp   = RNG.uniform(1.5, 3.0)
-    dom   = RNG.integers(0, 3)
+    freq  = RNG.uniform(4.0, 8.0)   # scratching motion frequency
+    amp   = RNG.uniform(1.0, 2.5)   # oscillation amplitude (m/s²)
+    g_amp = RNG.uniform(0.3, 0.9)   # rotational component from scratching
+    # Base orientation same as rest (dog is stationary, collar mostly flat)
+    ax_b  = RNG.normal(0.125, 0.015)
+    ay_b  = RNG.normal(1.163, 0.020)
+    az_b  = RNG.normal(8.635, 0.030)
+    dom   = RNG.integers(0, 3)      # dominant scratch axis
     amps_a = [0.25 * amp, 0.25 * amp, 0.25 * amp]
     amps_a[dom] = amp
-    ax = amps_a[0] * np.sin(2 * np.pi * freq * t)           + RNG.normal(0, 0.1, n)
-    ay = amps_a[1] * np.sin(2 * np.pi * freq * t + np.pi/4) + RNG.normal(0, 0.1, n)
-    az = 9.8 + amps_a[2] * np.sin(2 * np.pi * freq * t)     + RNG.normal(0, 0.1, n)
-    gx = 0.6 * amp * np.sin(2 * np.pi * freq * t)           + RNG.normal(0, 0.05, n)
-    gy = 0.5 * amp * np.cos(2 * np.pi * freq * t)           + RNG.normal(0, 0.05, n)
-    gz = 0.3 * amp * np.sin(2 * np.pi * freq * t + np.pi/3) + RNG.normal(0, 0.05, n)
+    ax = ax_b + amps_a[0] * np.sin(2 * np.pi * freq * t)           + RNG.normal(0, 0.08, n)
+    ay = ay_b + amps_a[1] * np.sin(2 * np.pi * freq * t + np.pi/4) + RNG.normal(0, 0.08, n)
+    az = az_b + amps_a[2] * np.sin(2 * np.pi * freq * t)           + RNG.normal(0, 0.10, n)
+    gx = g_amp * np.sin(2 * np.pi * freq * t)                      + RNG.normal(0, 0.05, n)
+    gy = g_amp * 0.7 * np.cos(2 * np.pi * freq * t)                + RNG.normal(0, 0.04, n)
+    gz = g_amp * 0.5 * np.sin(2 * np.pi * freq * t + np.pi / 3)    + RNG.normal(0, 0.04, n)
     return np.column_stack([ax, ay, az, gx, gy, gz]).astype(np.float32)
 
 
@@ -299,8 +320,9 @@ def train_model(X: np.ndarray, y: np.ndarray) -> lgb.LGBMClassifier:
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
 
-def evaluate_model(model: lgb.LGBMClassifier, scenario_name: str) -> float:
-    X, y  = generate_scenario_features(scenario_name, N_DAYS_TEST, split="test")
+def evaluate_model(model: lgb.LGBMClassifier, scenario_name: str) -> dict:
+    """Evaluate model on one scenario. Returns structured metrics dict."""
+    X, y   = generate_scenario_features(scenario_name, N_DAYS_TEST, split="test")
     y_pred = model.predict(X)
 
     acc          = accuracy_score(y, y_pred)
@@ -319,15 +341,32 @@ def evaluate_model(model: lgb.LGBMClassifier, scenario_name: str) -> float:
         row = "  ".join(f"{cm[i, j]:>8}" for j in range(len(labels)))
         print(f"  {name:>10}: {row}")
 
+    # Per-class detailed metrics
+    from sklearn.metrics import precision_recall_fscore_support
+    prec, rec, f1s, sup = precision_recall_fscore_support(
+        y, y_pred, labels=labels, zero_division=0
+    )
+    per_class = {}
+    for i, lbl in enumerate(labels):
+        per_class[CLASS_NAMES[lbl]] = {
+            "precision": float(prec[i]),
+            "recall":    float(rec[i]),
+            "f1":        float(f1s[i]),
+            "support":   int(sup[i]),
+        }
+
     sc_idx    = labels.index(int(BehaviorLabel.SCRATCH))
-    tp        = cm[sc_idx, sc_idx]
-    fn        = cm[sc_idx].sum() - tp
-    fp        = cm[:, sc_idx].sum() - tp
-    precision = tp / (tp + fp) if (tp + fp) else 0
-    recall    = tp / (tp + fn) if (tp + fn) else 0
-    f1        = 2 * precision * recall / (precision + recall) if (precision + recall) else 0
-    print(f"\n   ★ Scratch  precision={precision:.3f}  recall={recall:.3f}  F1={f1:.3f}")
-    return acc
+    scratch   = per_class["scratch"]
+    print(f"\n   ★ Scratch  precision={scratch['precision']:.3f}  "
+          f"recall={scratch['recall']:.3f}  F1={scratch['f1']:.3f}")
+
+    return {
+        "accuracy":         acc,
+        "n_samples":        len(y),
+        "per_class":        per_class,
+        "confusion_matrix": cm.tolist(),
+        "labels":           labels,
+    }
 
 
 def show_top_features(model: lgb.LGBMClassifier, top_n: int = 15) -> None:
@@ -338,46 +377,76 @@ def show_top_features(model: lgb.LGBMClassifier, top_n: int = 15) -> None:
         print(f"  {rank:2d}. feat_{i:03d}  importance={importance[i]:.1f}")
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Full evaluation pipeline (importable) ────────────────────────────────────
 
-def main() -> None:
-    t_start = time.time()
+SCENARIO_TYPES = {
+    "S1_Normal":      "训练内",
+    "S2_Active":      "训练内",
+    "S3_Calm":        "训练内",
+    "S4_Mild_skin":   "训练外",
+    "S5_Severe_skin": "训练外",
+}
 
-    # 1. Training data
+
+def run_full_evaluation(force_fresh: bool = False) -> dict:
+    """
+    Train model on S1/S2/S3 and evaluate on all 5 scenarios.
+    Returns structured metrics for writing to evaluation CSVs.
+    If force_fresh=True, deletes cached data before running.
+    """
+    if force_fresh and DATA_DIR.exists():
+        import shutil
+        shutil.rmtree(DATA_DIR)
+        DATA_DIR.mkdir(exist_ok=True)
+        print(f"  [fresh] 已清除缓存目录 {DATA_DIR}")
+
+    # Training
     X_train, y_train = build_training_data()
-    print(f"\n  Total: {len(X_train):,} windows  "
-          f"(move={int((y_train==1).sum()):,}  "
-          f"sleep={int((y_train==2).sum()):,}  "
-          f"scratch={int((y_train==3).sum()):,})")
-
-    # 2. Train
     model = train_model(X_train, y_train)
 
-    # 3. Save model
+    # Save production model
     with open(MODEL_PATH, "wb") as f:
         pickle.dump(model, f)
     print(f"  Model saved → {MODEL_PATH}")
 
-    # 4. Evaluate
+    # Evaluate all scenarios
     print(f"\n{'='*60}")
     print("Step 3 — Per-scenario evaluation (30-day held-out)")
     print(f"{'='*60}")
-    accs = {}
+    scenario_results = {}
     for sc in tqdm(TEST_SCENARIOS, desc="Evaluating", unit="sc", ncols=72):
         tag = "(UNSEEN)" if sc not in TRAIN_SCENARIOS else "(seen)  "
         tqdm.write(f"\n── {sc} {tag} ──")
-        accs[sc] = evaluate_model(model, sc)
+        metrics = evaluate_model(model, sc)
+        scenario_results[sc] = metrics
 
-    # 5. Feature importance
+    # Feature importance
     show_top_features(model)
+    importance = model.feature_importances_
+    sorted_idx = np.argsort(importance)[::-1]
+    feature_importance = [
+        (f"feat_{i:03d}", float(importance[i])) for i in sorted_idx
+    ]
 
-    # 6. Summary
+    return {
+        "scenarios":          scenario_results,
+        "feature_importance": feature_importance,
+        "model":              model,
+    }
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    t_start = time.time()
+    results = run_full_evaluation()
+
     print(f"\n{'='*60}")
     print("Summary")
     print(f"{'='*60}")
-    for sc, acc in accs.items():
+    for sc, m in results["scenarios"].items():
         tag = "(UNSEEN)" if sc not in TRAIN_SCENARIOS else "(seen)  "
-        print(f"  {tag} {sc:25s} accuracy={acc:.4f}")
+        print(f"  {tag} {sc:25s} accuracy={m['accuracy']:.4f}")
     print(f"\n  Data dir : {DATA_DIR}")
     print(f"  Model    : {MODEL_PATH}")
     print(f"  Total time: {time.time()-t_start:.1f}s")

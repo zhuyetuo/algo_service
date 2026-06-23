@@ -1,57 +1,18 @@
-# 混淆矩阵（所有场景合并）
-# 字段说明：
-#   scenario      场景名称
-#   true_class    真实类别（行）：样本的实际行为标签
-#   pred_class    预测类别（列）：模型给出的预测标签
-#   count         该组合的样本数量
-#
-# 读法：true_class=scratch, pred_class=movement 表示"真实是抓挠但被误判为运动"的样本数
-#       理想情况下，true_class == pred_class 的行应占全部数量，其余行应为 0
-#
-# ⚠️  当前数据为合成数据评估结果，替换真实数据时请重新运行评估脚本并覆盖本文件
-scenario,true_class,pred_class,count
-S1_Normal,movement,movement,14715
-S1_Normal,movement,sleep,0
-S1_Normal,movement,scratch,0
-S1_Normal,sleep,movement,0
-S1_Normal,sleep,sleep,10403
-S1_Normal,sleep,scratch,0
-S1_Normal,scratch,movement,0
-S1_Normal,scratch,sleep,0
-S1_Normal,scratch,scratch,732
-S2_Active,movement,movement,18592
-S2_Active,movement,sleep,0
-S2_Active,movement,scratch,0
-S2_Active,sleep,movement,0
-S2_Active,sleep,sleep,6246
-S2_Active,sleep,scratch,0
-S2_Active,scratch,movement,0
-S2_Active,scratch,sleep,0
-S2_Active,scratch,scratch,425
-S3_Calm,movement,movement,5197
-S3_Calm,movement,sleep,0
-S3_Calm,movement,scratch,0
-S3_Calm,sleep,movement,0
-S3_Calm,sleep,sleep,20493
-S3_Calm,sleep,scratch,0
-S3_Calm,scratch,movement,0
-S3_Calm,scratch,sleep,0
-S3_Calm,scratch,scratch,429
-S4_Mild_skin,movement,movement,11847
-S4_Mild_skin,movement,sleep,0
-S4_Mild_skin,movement,scratch,0
-S4_Mild_skin,sleep,movement,0
-S4_Mild_skin,sleep,sleep,9927
-S4_Mild_skin,sleep,scratch,0
-S4_Mild_skin,scratch,movement,0
-S4_Mild_skin,scratch,sleep,0
-S4_Mild_skin,scratch,scratch,2167
-S5_Severe_skin,movement,movement,8525
-S5_Severe_skin,movement,sleep,0
-S5_Severe_skin,movement,scratch,0
-S5_Severe_skin,sleep,movement,0
-S5_Severe_skin,sleep,sleep,9294
-S5_Severe_skin,sleep,scratch,0
-S5_Severe_skin,scratch,movement,0
-S5_Severe_skin,scratch,sleep,0
-S5_Severe_skin,scratch,scratch,4469
+# 混淆矩阵（行=真实类别，列=预测类别）
+# 对角线=预测正确，非对角线=误分类
+scenario,type,true_class,pred_movement,pred_sleep,pred_scratch
+S1 Normal,训练内,运动 movement,14648,0,0
+S1 Normal,训练内,睡眠 sleep,0,10676,0
+S1 Normal,训练内,抓挠 scratch,0,0,731
+S2 Active,训练内,运动 movement,19085,0,0
+S2 Active,训练内,睡眠 sleep,0,6563,0
+S2 Active,训练内,抓挠 scratch,0,0,417
+S3 Calm,训练内,运动 movement,5372,0,0
+S3 Calm,训练内,睡眠 sleep,0,19674,0
+S3 Calm,训练内,抓挠 scratch,0,0,428
+S4 Mild skin,训练外,运动 movement,12098,0,0
+S4 Mild skin,训练外,睡眠 sleep,0,10533,0
+S4 Mild skin,训练外,抓挠 scratch,0,0,2137
+S5 Severe skin,训练外,运动 movement,8684,0,0
+S5 Severe skin,训练外,睡眠 sleep,0,9033,0
+S5 Severe skin,训练外,抓挠 scratch,0,0,4551

@@ -3,7 +3,8 @@
 本目录存放由测试脚本自动生成的 CSV 缓存文件，**不纳入版本库**（已加入 `.gitignore`）。
 
 首次运行 `python tests/test_1_inference.py` 时自动生成；再次运行直接读缓存，不重新生成。
-删除本目录可强制重新生成所有数据。
+
+一键评估脚本 `tests/run_evaluation.py --fresh` 会自动清空本目录并重新生成。
 
 ---
 
@@ -18,7 +19,7 @@ IMU 原始窗口池。每类行为生成 2000 个窗口，每窗口 150 个采�
 | sample_idx | int | 窗口内采样点索引（0–149） |
 | ax | float | 加速度计 X 轴（m/s²） |
 | ay | float | 加速度计 Y 轴（m/s²） |
-| az | float | 加速度计 Z 轴（m/s²，静止时约 9.8） |
+| az | float | 加速度计 Z 轴（m/s²，犬只躺卧时约 8.6，活动时因设备倾角变化而变化） |
 | gx | float | 陀螺仪 X 轴（rad/s） |
 | gy | float | 陀螺仪 Y 轴（rad/s） |
 | gz | float | 陀螺仪 Z 轴（rad/s） |
