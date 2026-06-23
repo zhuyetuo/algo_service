@@ -4,15 +4,30 @@ scenario,type,true_class,pred_movement,pred_sleep,pred_scratch
 S1 Normal,训练内,运动 movement,14648,0,0
 S1 Normal,训练内,睡眠 sleep,0,10676,0
 S1 Normal,训练内,抓挠 scratch,0,0,731
-S2 Active,训练内,运动 movement,19085,0,0
-S2 Active,训练内,睡眠 sleep,0,6563,0
-S2 Active,训练内,抓挠 scratch,0,0,417
-S3 Calm,训练内,运动 movement,5372,0,0
-S3 Calm,训练内,睡眠 sleep,0,19674,0
-S3 Calm,训练内,抓挠 scratch,0,0,428
-S4 Mild skin,训练外,运动 movement,12098,0,0
-S4 Mild skin,训练外,睡眠 sleep,0,10533,0
-S4 Mild skin,训练外,抓挠 scratch,0,0,2137
-S5 Severe skin,训练外,运动 movement,8684,0,0
-S5 Severe skin,训练外,睡眠 sleep,0,9033,0
-S5 Severe skin,训练外,抓挠 scratch,0,0,4551
+S1 Normal,训练外,运动 movement,12933,0,0
+S1 Normal,训练外,睡眠 sleep,0,9340,0
+S1 Normal,训练外,抓挠 scratch,0,0,3777
+S2 Active,训练内,运动 movement,18533,0,0
+S2 Active,训练内,睡眠 sleep,0,6588,0
+S2 Active,训练内,抓挠 scratch,0,0,430
+S2 Active,训练外,运动 movement,16042,0,0
+S2 Active,训练外,睡眠 sleep,0,5477,0
+S2 Active,训练外,抓挠 scratch,0,0,3873
+S3 Calm,训练内,运动 movement,4955,0,0
+S3 Calm,训练内,睡眠 sleep,0,19489,0
+S3 Calm,训练内,抓挠 scratch,0,0,454
+S3 Calm,训练外,运动 movement,4455,0,0
+S3 Calm,训练外,睡眠 sleep,0,17330,0
+S3 Calm,训练外,抓挠 scratch,0,0,3856
+S4 Mild skin,训练内,运动 movement,11533,0,0
+S4 Mild skin,训练内,睡眠 sleep,0,9825,0
+S4 Mild skin,训练内,抓挠 scratch,0,0,2278
+S4 Mild skin,训练外,运动 movement,8822,0,0
+S4 Mild skin,训练外,睡眠 sleep,0,7767,0
+S4 Mild skin,训练外,抓挠 scratch,0,0,7234
+S5 Severe skin,训练内,运动 movement,8959,0,0
+S5 Severe skin,训练内,睡眠 sleep,0,8861,0
+S5 Severe skin,训练内,抓挠 scratch,0,0,4524
+S5 Severe skin,训练外,运动 movement,5583,0,0
+S5 Severe skin,训练外,睡眠 sleep,0,5565,0
+S5 Severe skin,训练外,抓挠 scratch,0,0,11706

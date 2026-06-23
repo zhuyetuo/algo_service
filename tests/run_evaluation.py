@@ -72,11 +72,16 @@ def _feature_descriptions() -> dict[str, str]:
 FEAT_DESC = _feature_descriptions()
 
 SCENARIO_LABELS = {
-    "S1_Normal":      ("S1 Normal",      "训练内"),
-    "S2_Active":      ("S2 Active",      "训练内"),
-    "S3_Calm":        ("S3 Calm",        "训练内"),
-    "S4_Mild_skin":   ("S4 Mild skin",   "训练外"),
-    "S5_Severe_skin": ("S5 Severe skin", "训练外"),
+    "S1_Normal_in":       ("S1 Normal",      "训练内"),
+    "S2_Active_in":       ("S2 Active",      "训练内"),
+    "S3_Calm_in":         ("S3 Calm",        "训练内"),
+    "S4_Mild_skin_in":    ("S4 Mild skin",   "训练内"),
+    "S5_Severe_skin_in":  ("S5 Severe skin", "训练内"),
+    "S1_Normal_out":      ("S1 Normal",      "训练外"),
+    "S2_Active_out":      ("S2 Active",      "训练外"),
+    "S3_Calm_out":        ("S3 Calm",        "训练外"),
+    "S4_Mild_skin_out":   ("S4 Mild skin",   "训练外"),
+    "S5_Severe_skin_out": ("S5 Severe skin", "训练外"),
 }
 
 CLASS_ZH = {
@@ -405,7 +410,7 @@ def _mk_conclusion_table(results: dict, unit_stats: dict | None) -> str:
     return (
         "| 维度 | 指标 | 结论 |\n"
         "|------|------|------|\n"
-        f"| 模型分类准确率 | 合成数据 {sc_count} 场景（含 2 个训练外高抓挠场景）| {model_icon} |\n"
+        f"| 模型分类准确率 | 合成数据 5 场景 × 训练内/训练外双版本共 {sc_count} 组 | {model_icon} |\n"
         f"| 单元测试通过率 | {unit_info} | {unit_icon} |\n"
         "| 服务连通性 | MySQL + TDengine | ✅ 通过（见 2.2 节）|\n"
         "| 调度任务 | 3 个任务全部注册并按时触发 | ✅ 通过 |\n"

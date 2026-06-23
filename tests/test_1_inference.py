@@ -69,13 +69,25 @@ N_DAYS_TEST  = 30
 _POOL_SIZE   = 2000
 RNG          = np.random.default_rng(42)
 
-DAILY_WINDOWS = {
+# 训练内数据：模型训练时见过的行为分布（S1/S2/S3 低抓挠；S4/S5 供对比用）
+DAILY_WINDOWS_IN = {
     "S1_Normal":      {BehaviorLabel.MOVEMENT: 480, BehaviorLabel.SLEEP: 350, BehaviorLabel.SCRATCH:  25},
     "S2_Active":      {BehaviorLabel.MOVEMENT: 620, BehaviorLabel.SLEEP: 220, BehaviorLabel.SCRATCH:  15},
     "S3_Calm":        {BehaviorLabel.MOVEMENT: 175, BehaviorLabel.SLEEP: 670, BehaviorLabel.SCRATCH:  15},
     "S4_Mild_skin":   {BehaviorLabel.MOVEMENT: 390, BehaviorLabel.SLEEP: 340, BehaviorLabel.SCRATCH:  75},
     "S5_Severe_skin": {BehaviorLabel.MOVEMENT: 300, BehaviorLabel.SLEEP: 300, BehaviorLabel.SCRATCH: 150},
 }
+
+# 训练外数据：高抓挠分布，模型训练时从未见过（每个场景同样的运动/睡眠模式，但抓挠比例显著提升）
+DAILY_WINDOWS_OUT = {
+    "S1_Normal":      {BehaviorLabel.MOVEMENT: 420, BehaviorLabel.SLEEP: 305, BehaviorLabel.SCRATCH: 130},  # scratch ~15%
+    "S2_Active":      {BehaviorLabel.MOVEMENT: 535, BehaviorLabel.SLEEP: 190, BehaviorLabel.SCRATCH: 130},  # scratch ~15%
+    "S3_Calm":        {BehaviorLabel.MOVEMENT: 150, BehaviorLabel.SLEEP: 580, BehaviorLabel.SCRATCH: 130},  # scratch ~15%
+    "S4_Mild_skin":   {BehaviorLabel.MOVEMENT: 300, BehaviorLabel.SLEEP: 260, BehaviorLabel.SCRATCH: 245},  # scratch ~30%
+    "S5_Severe_skin": {BehaviorLabel.MOVEMENT: 188, BehaviorLabel.SLEEP: 187, BehaviorLabel.SCRATCH: 375},  # scratch ~50%
+}
+
+DAILY_WINDOWS = DAILY_WINDOWS_IN  # alias kept for backward compatibility
 
 TRAIN_SCENARIOS = ["S1_Normal", "S2_Active", "S3_Calm"]
 TEST_SCENARIOS  = list(DAILY_WINDOWS.keys())
@@ -236,19 +248,20 @@ def _feat_cols_from_pool() -> list[str]:
     return [f"feat_{i:03d}" for i in range(n)]
 
 
-def _scenario_csv(scenario_name: str, split: str) -> Path:
-    return DATA_DIR / f"features_{scenario_name}_{split}.csv"
+def _scenario_csv(scenario_name: str, split: str, variant: str = "in") -> Path:
+    return DATA_DIR / f"features_{scenario_name}_{variant}_{split}.csv"
 
 
 def generate_scenario_features(
-    scenario_name: str, n_days: int, split: str
+    scenario_name: str, n_days: int, split: str, variant: str = "in"
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Return (X, y) for the given scenario.
     Loads from CSV if it exists; otherwise samples from the feature pool and saves.
     split: 'train' | 'test'
+    variant: 'in' = training-distribution data; 'out' = elevated-scratch data
     """
-    csv_path = _scenario_csv(scenario_name, split)
+    csv_path = _scenario_csv(scenario_name, split, variant)
 
     if csv_path.exists():
         df        = pd.read_csv(csv_path)
@@ -258,7 +271,7 @@ def generate_scenario_features(
         return X, y
 
     pool  = _get_pool()
-    daily = DAILY_WINDOWS[scenario_name]
+    daily = DAILY_WINDOWS_IN[scenario_name] if variant == "in" else DAILY_WINDOWS_OUT[scenario_name]
     X_parts, y_parts = [], []
 
     for _ in tqdm(range(n_days), desc=f"  {scenario_name}", unit="day", ncols=72, leave=False):
@@ -320,9 +333,9 @@ def train_model(X: np.ndarray, y: np.ndarray) -> lgb.LGBMClassifier:
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
 
-def evaluate_model(model: lgb.LGBMClassifier, scenario_name: str) -> dict:
+def evaluate_model(model: lgb.LGBMClassifier, scenario_name: str, variant: str = "in") -> dict:
     """Evaluate model on one scenario. Returns structured metrics dict."""
-    X, y   = generate_scenario_features(scenario_name, N_DAYS_TEST, split="test")
+    X, y   = generate_scenario_features(scenario_name, N_DAYS_TEST, split="test", variant=variant)
     y_pred = model.predict(X)
 
     acc          = accuracy_score(y, y_pred)
@@ -379,12 +392,19 @@ def show_top_features(model: lgb.LGBMClassifier, top_n: int = 15) -> None:
 
 # ── Full evaluation pipeline (importable) ────────────────────────────────────
 
+# _in  = 原始场景分布（S1/S2/S3 的 _in 与训练分布一致，故为"训练内"；S4/S5 虽非训练分布但保留原始场景比例）
+# _out = 高抓挠分布，模型训练时从未见过，属于"训练外"
 SCENARIO_TYPES = {
-    "S1_Normal":      "训练内",
-    "S2_Active":      "训练内",
-    "S3_Calm":        "训练内",
-    "S4_Mild_skin":   "训练外",
-    "S5_Severe_skin": "训练外",
+    "S1_Normal_in":       "训练内",
+    "S2_Active_in":       "训练内",
+    "S3_Calm_in":         "训练内",
+    "S4_Mild_skin_in":    "训练内",
+    "S5_Severe_skin_in":  "训练内",
+    "S1_Normal_out":      "训练外",
+    "S2_Active_out":      "训练外",
+    "S3_Calm_out":        "训练外",
+    "S4_Mild_skin_out":   "训练外",
+    "S5_Severe_skin_out": "训练外",
 }
 
 
@@ -409,16 +429,18 @@ def run_full_evaluation(force_fresh: bool = False) -> dict:
         pickle.dump(model, f)
     print(f"  Model saved → {MODEL_PATH}")
 
-    # Evaluate all scenarios
+    # Evaluate all scenarios × both distribution variants
     print(f"\n{'='*60}")
-    print("Step 3 — Per-scenario evaluation (30-day held-out)")
+    print("Step 3 — Per-scenario evaluation (30-day held-out, in + out variants)")
     print(f"{'='*60}")
     scenario_results = {}
     for sc in tqdm(TEST_SCENARIOS, desc="Evaluating", unit="sc", ncols=72):
-        tag = "(UNSEEN)" if sc not in TRAIN_SCENARIOS else "(seen)  "
-        tqdm.write(f"\n── {sc} {tag} ──")
-        metrics = evaluate_model(model, sc)
-        scenario_results[sc] = metrics
+        for variant in ("in", "out"):
+            key = f"{sc}_{variant}"
+            label = "训练内分布" if variant == "in" else "训练外高抓挠"
+            tqdm.write(f"\n── {sc} [{label}] ──")
+            metrics = evaluate_model(model, sc, variant=variant)
+            scenario_results[key] = metrics
 
     # Feature importance
     show_top_features(model)
@@ -444,9 +466,10 @@ def main() -> None:
     print(f"\n{'='*60}")
     print("Summary")
     print(f"{'='*60}")
-    for sc, m in results["scenarios"].items():
-        tag = "(UNSEEN)" if sc not in TRAIN_SCENARIOS else "(seen)  "
-        print(f"  {tag} {sc:25s} accuracy={m['accuracy']:.4f}")
+    for key, m in results["scenarios"].items():
+        sc, variant = key.rsplit("_", 1)
+        tag = "训练外" if variant == "out" else ("训练内" if sc in TRAIN_SCENARIOS else "原始 ")
+        print(f"  [{tag}] {key:30s} accuracy={m['accuracy']:.4f}")
     print(f"\n  Data dir : {DATA_DIR}")
     print(f"  Model    : {MODEL_PATH}")
     print(f"  Total time: {time.time()-t_start:.1f}s")
