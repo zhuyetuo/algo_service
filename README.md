@@ -94,7 +94,7 @@ docker exec local-mysql8 mysql -h 192.168.33.253 -u root -pHicc-mysql-2026 \
 - [算法流程](#算法流程)
 - [特征说明（93 维）](#特征说明93-维)
 - [配置项说明](#配置项说明)
-- [单元测试](#单元测试)
+- [测试与验证](#测试与验证)
 
 ---
 
@@ -236,9 +236,52 @@ python train/train.py
 
 ---
 
-## 单元测试
+## 测试与验证
 
-单元测试在容器内运行（依赖已安装，无需真实数据库）：
+本项目包含两类测试，覆盖不同层面：
+
+### 算法准确率评估
+
+评估分类模型在不同行为场景下的准确率，**一键运行并生成测试报告**：
+
+```bash
+# 标准运行（使用已缓存的合成数据，约 30 秒）
+docker exec algo_service python tests/run_evaluation.py
+
+# 强制重新生成合成数据后评估（约 3 分钟）
+docker exec algo_service python tests/run_evaluation.py --fresh
+```
+
+评估方案：5 个行为场景，每个场景分别用**训练内**（原始场景分布）和**训练外**（高抓挠分布，模型从未见过）两套数据测试，共 10 组：
+
+| 场景 | 说明 | 训练内抓挠比 | 训练外抓挠比 |
+|------|------|------------|------------|
+| S1 Normal | 普通健康犬只 | ~3% | ~15% |
+| S2 Active | 活跃型犬只 | ~2% | ~15% |
+| S3 Calm | 安静型犬只 | ~2% | ~15% |
+| S4 Mild skin | 轻度皮肤问题 | ~9% | ~30% |
+| S5 Severe skin | 重度皮肤问题 | ~20% | ~50% |
+
+- 训练内（_in）：使用原始场景分布，其中 S1/S2/S3 与模型训练数据分布完全一致
+- 训练外（_out）：同一运动/睡眠模式但抓挠比例大幅提升，模型训练时从未见过
+
+**输出文件：**
+
+| 文件 | 说明 |
+|------|------|
+| `docs/test_report.md` | 完整测试报告（含所有指标、混淆矩阵、特征重要性）|
+| `tests/evaluation/model/scenarios_summary.csv` | 各场景准确率汇总 |
+| `tests/evaluation/model/classification_report.csv` | 各类别精确率/召回率/F1 |
+| `tests/evaluation/model/confusion_matrix.csv` | 各场景混淆矩阵 |
+| `tests/evaluation/model/feature_importance.csv` | 特征重要性排名 |
+
+> ⚠️ **说明**：当前使用合成 IMU 数据（已参照真实传感器采集规律校准）。上线前须使用真实标注数据集替换 `tests/evaluation/` 中的结果文件，重新运行 `--fresh` 以验证实际准确率。
+
+---
+
+### 服务单元测试
+
+针对服务各模块的功能正确性验证，在容器内运行（依赖已安装，无需真实数据库）：
 
 ```bash
 docker exec algo_service python -m pytest tests/unit/ -v
