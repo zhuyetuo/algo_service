@@ -193,30 +193,29 @@ MODULE_ZH = {
 def run_unit_tests() -> dict:
     """Run pytest and return per-module counts."""
     print("\n运行单元测试 …")
-    cmd = [sys.executable, "-m", "pytest", "tests/unit/", "-v", "--tb=short", "-q"]
+    cmd = [sys.executable, "-m", "pytest", "tests/unit/", "-v", "--tb=short"]
     result = subprocess.run(cmd, capture_output=True, text=True)
     output = result.stdout + result.stderr
 
     module_stats: dict[str, dict] = {}
     for line in output.splitlines():
-        # lines look like: tests/unit/test_foo.py::ClassName::test_bar PASSED
-        if " PASSED" in line or " FAILED" in line or " ERROR" in line:
+        # verbose lines look like: tests/unit/test_foo.py::Class::test_bar PASSED
+        if "::" in line and (" PASSED" in line or " FAILED" in line or " ERROR" in line):
             parts = line.split("::")
-            if len(parts) >= 2:
-                mod = Path(parts[0]).stem  # e.g. "test_api_health"
-                if mod not in module_stats:
-                    module_stats[mod] = {"passed": 0, "failed": 0}
-                if " PASSED" in line:
-                    module_stats[mod]["passed"] += 1
-                else:
-                    module_stats[mod]["failed"] += 1
+            mod = Path(parts[0].strip()).stem  # e.g. "test_api_health"
+            if mod not in module_stats:
+                module_stats[mod] = {"passed": 0, "failed": 0}
+            if " PASSED" in line:
+                module_stats[mod]["passed"] += 1
+            else:
+                module_stats[mod]["failed"] += 1
 
     total_passed = sum(v["passed"] for v in module_stats.values())
     total_failed = sum(v["failed"] for v in module_stats.values())
     print(f"  结果: {total_passed} 通过 / {total_failed} 失败")
-    if result.returncode != 0 and total_failed == 0:
-        print("  [警告] pytest 返回非零退出码，请检查输出：")
-        print(output[-2000:])
+    if total_passed + total_failed == 0:
+        print("  [警告] 未解析到任何测试结果，pytest 输出如下：")
+        print(output[-3000:])
 
     return {
         "modules":       module_stats,
@@ -394,8 +393,13 @@ def _mk_conclusion_table(results: dict, unit_stats: dict | None) -> str:
     unit_info = "未运行"
     if unit_stats:
         tp, tf = unit_stats["total_passed"], unit_stats["total_failed"]
-        unit_icon = "✅ 全部通过" if tf == 0 else f"❌ {tf} 个失败"
-        unit_info = f"{tp} / {tp + tf} = {tp / (tp + tf) * 100:.0f}%"
+        tt = tp + tf
+        if tt > 0:
+            unit_icon = "✅ 全部通过" if tf == 0 else f"❌ {tf} 个失败"
+            unit_info = f"{tp} / {tt} = {tp / tt * 100:.0f}%"
+        else:
+            unit_icon = "⚠️ 未解析到结果"
+            unit_info = "请查看 pytest 输出"
 
     sc_count = len(results)
     return (
