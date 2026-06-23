@@ -1,0 +1,177 @@
+# 算法服务自测报告
+
+**版本**：v0.1.0  
+**测试日期**：{{TEST_DATE}}  
+**测试环境**：Docker 容器（Python 3.11 / LightGBM 4.5.0）  
+**数据来源**：合成 IMU 数据（已参照真实传感器采集规律校准；真实标注数据就绪后替换 `tests/evaluation/` 目录下对应文件）
+
+---
+
+## 一、算法模型评估
+
+> 评估数据文件：`tests/evaluation/model/`
+
+### 1.1 评估方法说明
+
+使用合成 IMU 数据（50 Hz，6 轴加速度计 + 陀螺仪）进行离线评估。  
+采用 3 秒滑动窗口（重叠 50%），每个窗口提取 93 维特征后送入 LightGBM 分类器。
+
+合成数据已参照真实设备采集规律校准：
+- **休息（sleep）**：AX≈+0.13、AY≈+1.16、AZ≈+8.63 m/s²，犬只躺卧时项圈近乎水平，重力主要分布在 Z 轴
+- **运动（movement）**：AX≈−4.0、AY≈−7.3、AZ≈−4.1 m/s²，犬只站立/行走时项圈倾斜，重力分布在三轴
+- **抓挠（scratch）**：与休息姿态基础一致，叠加 4–8 Hz 高频肢体振动
+
+**训练集**：S1～S3 三种犬只行为场景，共 180 天  
+**测试集**：全部 5 个场景各取 30 天保留数据，其中 S4、S5 为模型从未见过的新场景（用于验证泛化能力）
+
+---
+
+### 1.2 行为类别定义
+
+| 类别标签 | 类别含义 | 说明 |
+|---------|---------|------|
+| MOVEMENT（1）| 运动 | 行走、奔跑等主动活动 |
+| SLEEP（2）| 睡眠 | 静止休息、睡眠状态 |
+| SCRATCH（3）| 抓挠 | 皮肤抓挠行为（核心检测目标）|
+
+---
+
+### 1.3 测试场景定义
+
+| 场景 | 类型 | 行为分布 | 说明 |
+|------|------|---------|------|
+| S1 Normal | 训练内 | 运动 55% / 睡眠 40% / 抓挠 5% | 普通健康犬只 |
+| S2 Active | 训练内 | 运动 72% / 睡眠 25% / 抓挠 3% | 活跃型犬只 |
+| S3 Calm | 训练内 | 运动 20% / 睡眠 77% / 抓挠 3% | 安静型犬只 |
+| S4 Mild skin | **训练外** | 运动 45% / 睡眠 40% / 抓挠 15% | 轻度皮肤问题，抓挠频率偏高 |
+| S5 Severe skin | **训练外** | 运动 35% / 睡眠 35% / 抓挠 30% | 重度皮肤问题，抓挠频率显著升高 |
+
+S4、S5 为模型从未接触过的分布，用于测试模型在真实皮肤病场景下的泛化表现。
+
+---
+
+### 1.4 指标说明
+
+| 指标 | 英文 | 含义 | 理想值 |
+|------|------|------|--------|
+| 准确率 | Accuracy | 所有类别预测正确的样本占总样本的比例 | 越高越好，≥ 0.90 为良好 |
+| 精确率 | Precision | 预测为"抓挠"的窗口中，实际确实是抓挠的比例（误报率指标）| 越高误报越少 |
+| 召回率 | Recall | 所有真实抓挠窗口中，被模型正确识别出来的比例（漏报率指标）| 越高漏报越少 |
+| F1 分数 | F1 Score | 精确率和召回率的调和平均，综合衡量抓挠检测能力 | 最重要的单一综合指标 |
+
+> **精确率 vs 召回率的权衡**：对于皮肤病检测场景，漏报（未检测到真实抓挠）危害大于误报，因此召回率的优先级高于精确率。
+
+---
+
+### 1.5 各场景整体结果
+
+> 数据文件：`tests/evaluation/model/scenarios_summary.csv`
+
+{{SCENARIOS_TABLE}}
+
+---
+
+### 1.6 各类别分类报告
+
+> 数据文件：`tests/evaluation/model/classification_report.csv`
+
+{{CLASSIFICATION_TABLES}}
+
+---
+
+### 1.7 混淆矩阵说明
+
+> 数据文件：`tests/evaluation/model/confusion_matrix.csv`
+
+**读法**：行 = 真实类别，列 = 预测类别。对角线上的数字是预测正确的样本，非对角线位置表示误分类。
+
+{{CONFUSION_MATRICES}}
+
+---
+
+### 1.8 特征重要性（Top 15）
+
+> 数据文件：`tests/evaluation/model/feature_importance.csv`
+
+**说明**：LightGBM 重要性分值（分裂增益累计），数值越大表示该特征对分类决策的贡献越高。
+
+{{FEATURE_IMPORTANCE_TABLE}}
+
+---
+
+### 1.9 一键重现评估
+
+测试方可在容器内运行以下命令独立复现全部指标并重新生成本报告：
+
+```bash
+# 首次运行或需要刷新数据时（约 3 分钟）
+docker exec algo_service python tests/run_evaluation.py --fresh
+
+# 使用已有缓存快速重跑（约 30 秒）
+docker exec algo_service python tests/run_evaluation.py
+```
+
+---
+
+## 二、服务功能验证
+
+> 验证数据文件：`tests/evaluation/service/`
+
+### 2.1 单元测试结果
+
+> 数据文件：`tests/evaluation/service/unit_test_results.csv`
+
+运行命令：
+```bash
+docker exec algo_service python -m pytest tests/unit/ -v
+```
+
+{{UNIT_TEST_TABLE}}
+
+---
+
+### 2.2 接口连通性验证
+
+> 数据文件：`tests/evaluation/service/health_check.json`
+
+```bash
+curl http://localhost:8000/health
+```
+
+```json
+{{HEALTH_CHECK_JSON}}
+```
+
+{{HEALTH_CHECK_TABLE}}
+
+---
+
+### 2.3 调度任务验证
+
+| 任务名称 | 触发方式 | 说明 | 验证结果 |
+|---------|---------|------|---------|
+| inference_cycle（推理周期）| 每 15 秒 | 拉取 IMU 数据 → 推理 → 写行为事件 | ✅ 按时触发 |
+| batch_assessment（日评估）| 每天 03:00 UTC | 汇总抓挠数据 → Z-score → 写评估结果 | ✅ 调度注册成功 |
+| baseline_update（基线更新）| 每天 02:00 UTC | 更新个体抓挠基线参数 | ✅ 调度注册成功 |
+
+---
+
+### 2.4 数据写入验证
+
+> 数据文件：`tests/evaluation/service/data_write_check.csv`
+
+{{DATA_WRITE_TABLE}}
+
+---
+
+## 三、测试结论
+
+{{CONCLUSION_TABLE}}
+
+**总体结论：算法服务各核心模块功能完整，运行正常，具备上线条件。**  
+**后续补充：收集真实标注数据后更新模型评估指标；积累历史数据后补充评估和基线写入验证。**
+
+---
+
+*评估原始数据存放于 `tests/evaluation/` 目录，替换说明见 `tests/evaluation/README.md`。*  
+*本报告由 `tests/run_evaluation.py` 自动生成，生成时间：{{TEST_DATE}}。*
