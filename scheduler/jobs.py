@@ -15,11 +15,13 @@ import time
 from datetime import datetime, timezone as dt_tz
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import aiomysql
 import numpy as np
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError as SAOperationalError
 
 from loguru import logger
 
@@ -439,6 +441,8 @@ async def _process_device_imu(clf, device_id: int, device_sn: str,
             elif not failed:
                 break
 
+    except ConnectionError as e:
+        logger.warning("设备 {} TDengine 无法连接，本次周期跳过 — {}", device_id, e)
     except Exception:
         logger.exception("设备 {} 推理周期失败", device_id)
 
@@ -476,6 +480,11 @@ async def run_inference_cycle() -> None:
                 JOIN {settings.biz_schema}.`user` u ON dbh.user_id = u.id
                 WHERE dbh.bind_status = 1
             """))).fetchall()
+        except (SAOperationalError, aiomysql.OperationalError) as e:
+            await db.rollback()
+            logger.warning("MySQL 无法连接 {}:{} — 跳过本次推理周期 ({})",
+                           settings.db_host, settings.db_port, e.__class__.__name__)
+            return
         except Exception:
             await db.rollback()
             logger.warning("device_bind_history 不可用，从 device_sync_state 读取已知设备")
@@ -532,6 +541,8 @@ async def run_inference_cycle() -> None:
             try:
                 sn = device_sn_map.get(device_id, "")
                 await _sync_env_for_device(device_id, sn, device_tz_map.get(device_id))
+            except ConnectionError as e:
+                logger.warning("设备 {} TDengine 无法连接，环境同步跳过 — {}", device_id, e)
             except Exception:
                 logger.exception("设备 {} 环境数据同步失败", device_id)
 

@@ -3,16 +3,22 @@ TDengine 连接与数据拉取模块（同步，由 asyncio.to_thread 在线程�
 使用 taosrest HTTP 连接器，无需在容器内安装 TDengine 原生客户端库。
 """
 import datetime
+import urllib.error
 import taosrest
 from config import settings
 
 
 def _get_conn() -> taosrest.TaosRestConnection:
-    return taosrest.connect(
-        url=f"http://{settings.td_host}:{settings.td_port}",
-        user=settings.td_user,
-        password=settings.td_password,
-    )
+    try:
+        return taosrest.connect(
+            url=f"http://{settings.td_host}:{settings.td_port}",
+            user=settings.td_user,
+            password=settings.td_password,
+        )
+    except (urllib.error.URLError, OSError) as e:
+        raise ConnectionError(
+            f"TDengine 无法连接 {settings.td_host}:{settings.td_port}"
+        ) from e
 
 
 def _table() -> str:
