@@ -381,19 +381,13 @@ async def _process_device_imu(clf, device_id: int, device_sn: str,
                 if not any_data:
                     cur_ms = int(time.time() * 1000)
                     if last_ts > cur_ms:
-                        # 断点落在未来（设备时钟异常写入了未来时间戳），自动重置
-                        logger.warning("设备 {} 断点 {} 超出当前时间 {}，自动重置为 0",
-                                       device_id, last_ts, cur_ms)
-                        async with AsyncSessionLocal() as db:
-                            await db.execute(text("""
-                                UPDATE device_sync_state
-                                SET last_processed_ts = 0, updated_at = :now
-                                WHERE device_id = :did
-                            """), {"now": cur_ms, "did": device_id})
-                            await db.commit()
-                        last_ts = 0
-                        continue
-                    logger.info("设备 {} 数据无更新，跳过本次推理", device_id)
+                        # 断点在未来且无新数据：设备时钟异常，已处理的数据带未来时间戳。
+                        # 只打日志，不重置——断点已正确指向最新已处理位置，等设备实际产生
+                        # 更新数据后自然推进，无需干预。
+                        logger.warning("设备 {} 断点 {} 超出当前时间（设备时钟偏快 {:.1f}h），等待新数据",
+                                       device_id, last_ts, (last_ts - cur_ms) / 3_600_000)
+                    else:
+                        logger.info("设备 {} 数据无更新，跳过本次推理", device_id)
                 for day_ts in sorted(pending_assess):
                     if day_ts < today_ts:
                         try:
