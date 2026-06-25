@@ -3,8 +3,7 @@ from enum import IntEnum
 from pathlib import Path
 
 import numpy as np
-from scipy import stats
-from scipy.fft import rfft, rfftfreq
+from scipy import stats, signal
 
 from config import settings
 
@@ -16,64 +15,55 @@ class BehaviorLabel(IntEnum):
     SCRATCH  = 3
 
 
+# imu_train 输出标签 → BehaviorLabel 映射
+# remap_3class.yaml 顺序：睡觉=0, 活动=1, 抓挠=2
+_LABEL_MAP: dict[int, int] = {
+    0: BehaviorLabel.SLEEP,
+    1: BehaviorLabel.MOVEMENT,
+    2: BehaviorLabel.SCRATCH,
+}
+
+
 # ---------------------------------------------------------------------------
-# 特征提取
+# 特征提取（与 training/imu_train/src/ml/features.py 保持一致，共 78 维）
 # ---------------------------------------------------------------------------
 
 def _time_features(x: np.ndarray) -> np.ndarray:
-    """提取单轴时域特征：均值、标准差、最小值、最大值、极差、RMS、过零率、偏度、峰度。"""
-    rms = np.sqrt(np.mean(x ** 2))
+    """单轴时域特征 9 维：均值、标准差、最小值、最大值、极差、RMS、偏度、峰度、过零率。"""
     return np.array([
-        x.mean(),
-        x.std(),
-        x.min(),
-        x.max(),
-        x.max() - x.min(),
-        rms,
-        float(np.sum(np.diff(np.sign(x)) != 0)),
+        np.mean(x),
+        np.std(x),
+        np.min(x),
+        np.max(x),
+        np.max(x) - np.min(x),
+        np.sqrt(np.mean(x ** 2)),
         stats.skew(x),
         stats.kurtosis(x),
+        float(np.sum(np.diff(np.sign(x)) != 0)),
     ])
 
 
 def _freq_features(x: np.ndarray, fs: int) -> np.ndarray:
-    """提取单轴频域特征：主频、能量、谱熵。"""
-    spectrum = np.abs(rfft(x))
-    freqs = rfftfreq(len(x), d=1.0 / fs)
-    if spectrum.sum() == 0:
-        return np.zeros(3)
-    dominant = freqs[np.argmax(spectrum)]
-    energy = float(np.sum(spectrum ** 2))
-    prob = spectrum / spectrum.sum()
-    entropy = float(-np.sum(prob * np.log(prob + 1e-12)))
-    return np.array([dominant, energy, entropy])
+    """单轴频域特征 4 维（Welch PSD）：频谱均值、频谱标准差、主频、频谱熵。"""
+    freqs, psd = signal.welch(x, fs=fs, nperseg=min(len(x), 32))
+    psd_norm = psd / (psd.sum() + 1e-8)
+    spectral_mean = np.sum(freqs * psd_norm)
+    spectral_std  = np.sqrt(np.sum((freqs - spectral_mean) ** 2 * psd_norm))
+    dominant_freq = freqs[np.argmax(psd)]
+    spectral_entropy = -np.sum(psd_norm * np.log(psd_norm + 1e-8))
+    return np.array([spectral_mean, spectral_std, dominant_freq, spectral_entropy])
 
 
 def extract_features(window: np.ndarray, fs: int) -> np.ndarray:
     """
     window : (n_samples, 6) float32，列顺序为 [ax, ay, az, gx, gy, gz]
-    返回：一维特征向量（约 93 维）
+    返回：78 维特征向量（6 轴 × 13 维），与 imu_train 特征空间一致。
     """
     parts = []
-    # 对六轴分别提取时域和频域特征
     for i in range(6):
         col = window[:, i]
-        parts.append(_time_features(col))
-        parts.append(_freq_features(col, fs))
-
-    # 加速度合力特征
-    acc_mag = np.linalg.norm(window[:, :3], axis=1)
-    parts.append(_time_features(acc_mag))
-
-    # 角速度合力特征
-    gyr_mag = np.linalg.norm(window[:, 3:], axis=1)
-    parts.append(_time_features(gyr_mag))
-
-    # 加速度轴间相关系数
-    for i, j in [(0, 1), (0, 2), (1, 2)]:
-        corr = np.corrcoef(window[:, i], window[:, j])[0, 1]
-        parts.append(np.array([corr]))
-
+        parts.append(_time_features(col))   # 9 维
+        parts.append(_freq_features(col, fs))  # 4 维
     return np.concatenate(parts)
 
 
@@ -180,7 +170,10 @@ class BehaviorClassifier:
             return []
 
         X = np.stack([extract_features(w, self._fs) for w in windows])
-        labels = self._model.predict(X)
+        raw_labels = self._model.predict(X)
+
+        # imu_train 输出 0/1/2，映射到 BehaviorLabel（SLEEP=2/MOVEMENT=1/SCRATCH=3）
+        labels = np.array([_LABEL_MAP.get(int(l), BehaviorLabel.UNKNOWN) for l in raw_labels])
 
         # predict_proba 返回每个类别的概率分布，最大值即为置信度
         if hasattr(self._model, "predict_proba"):
