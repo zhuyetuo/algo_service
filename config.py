@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     pg_schema_assessment: str = "pet_dog_skin_assessment"
     pg_schema_environment: str = "pet_dog_environment"
     pg_schema_baseline: str = "pet_dog_scratch_baseline"
+    pg_schema_daily_summary: str = "pet_dog_daily_summary"
 
     # 业务数据库（设备绑定、用户信息来源）
     biz_schema: str = "hiccpet_petos"
