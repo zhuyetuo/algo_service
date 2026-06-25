@@ -5,6 +5,7 @@ TDengine 连接与数据拉取模块（同步，由 asyncio.to_thread 在线程�
 import datetime
 import urllib.error
 import taosrest
+import taosrest.errors
 from config import settings
 
 
@@ -19,6 +20,14 @@ def _get_conn() -> taosrest.TaosRestConnection:
         raise ConnectionError(
             f"TDengine 无法连接 {settings.td_host}:{settings.td_port}"
         ) from e
+
+
+def _exec(cursor, sql: str) -> None:
+    """执行 SQL，将 TDengine 业务错误统一转为 ConnectionError 以便上层简洁处理。"""
+    try:
+        cursor.execute(sql)
+    except taosrest.errors.ConnectError as e:
+        raise ConnectionError(f"TDengine 查询失败: {e}") from e
 
 
 def _table() -> str:
@@ -40,7 +49,7 @@ def td_get_devices() -> list[str]:
     conn = _get_conn()
     try:
         cursor = conn.cursor()
-        cursor.execute(f"SELECT DISTINCT device_sn FROM {_table()}")
+        _exec(cursor, f"SELECT DISTINCT device_sn FROM {_table()}")
         rows = cursor.fetchall()
         return [str(r[0]).strip() for r in rows]
     finally:
@@ -53,7 +62,7 @@ def td_fetch_env(device_sn: str, last_ts_ms: int) -> list[dict]:
     try:
         cursor = conn.cursor()
         table = f"{settings.td_database}.{settings.td_supertable_env}"
-        cursor.execute(f"""
+        _exec(cursor, f"""
             SELECT ts, temperature, humidity, body_temp
             FROM {table}
             WHERE device_sn = '{device_sn}'
@@ -86,7 +95,7 @@ def td_is_charging(device_sn: str) -> bool:
     try:
         cursor = conn.cursor()
         table = f"{settings.td_database}.{settings.td_supertable_battery}"
-        cursor.execute(f"""
+        _exec(cursor, f"""
             SELECT LAST(charging)
             FROM {table}
             WHERE device_sn = '{device_sn}'
@@ -102,7 +111,7 @@ def td_fetch(device_sn: str, last_ts_ms: int) -> list[dict]:
     conn = _get_conn()
     try:
         cursor = conn.cursor()
-        cursor.execute(f"""
+        _exec(cursor, f"""
             SELECT ts, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
             FROM {_table()}
             WHERE device_sn = '{device_sn}'
