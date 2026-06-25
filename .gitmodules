@@ -1,6 +1,6 @@
 [submodule "database_infra"]
 	path = database_infra
 	url = https://github.com/zhuyetuo/database_infra.git
-[submodule "training/imu_train"]
-	path = training/imu_train
+[submodule "imu_train"]
+	path = imu_train
 	url = https://github.com/zhuyetuo/imu_train
