@@ -189,6 +189,37 @@ def _score_to_level(score: float) -> int:
     return min(int(score // 10), 10)
 
 
+def _sleep_status(sleep_ratio: float, wear_min: int) -> int:
+    """0=绿(正常) 1=黄(偏少) 2=红(严重不足)。佩戴不足2h时不做判断。"""
+    if wear_min < 120:
+        return 0
+    if sleep_ratio >= 0.25:
+        return 0
+    elif sleep_ratio >= 0.10:
+        return 1
+    return 2
+
+
+def _move_status(active_ratio: float, wear_min: int) -> int:
+    """0=绿(正常) 1=黄(偏低/偏高) 2=红(极少/过度)。"""
+    if wear_min < 120:
+        return 0
+    if 0.15 <= active_ratio <= 0.65:
+        return 0
+    elif 0.05 <= active_ratio < 0.15 or 0.65 < active_ratio <= 0.80:
+        return 1
+    return 2
+
+
+def _scratch_status(alert_level: int) -> int:
+    """直接映射 alert_level：0→绿, 1→黄, 2/3→红。"""
+    if alert_level == 0:
+        return 0
+    elif alert_level == 1:
+        return 1
+    return 2
+
+
 def _get_alert_level(consec: int) -> int:
     """
     根据连续异常天数返回告警等级。
@@ -629,6 +660,26 @@ async def assess_device(db: AsyncSession, device_id: int, stat_date_ts: int, use
     })
     await db.commit()
 
+    # ── 12. 写每日行为汇总 pet_dog_daily_summary.d_{device_id} ───────────────
+    await _write_daily_summary(
+        db=db,
+        device_id=device_id,
+        stat_date_ts=stat_date_ts,
+        b_tbl=b_tbl,
+        day_end_ts=day_end_ts,
+        scratch_count=scratch_count,
+        scratch_dur_ms=scratch_dur,
+        scratch_avg_dur_ms=scratch_avg_dur,
+        scratch_max_dur_ms=scratch_max_dur,
+        night_scratch_count=night_count,
+        wear_minutes=wear_minutes,
+        worn_loose_minutes=worn_loose_minutes,
+        alert_level=alert_level,
+        local_date=_ts_to_local_date(stat_date_ts, user_timezone),
+        user_timezone=user_timezone,
+        now_ms=now_ms,
+    )
+
     if alert_level > 0:
         logger.warning(
             "ALERT device={} stat_date_ts={} alert_level={} reason={}",
@@ -641,6 +692,138 @@ async def assess_device(db: AsyncSession, device_id: int, stat_date_ts: int, use
             device_id, phase, zscore, consec_abnormal, alert_level,
             total_score, health_level,
         )
+
+
+async def _write_daily_summary(
+    db: AsyncSession,
+    device_id: int,
+    stat_date_ts: int,
+    b_tbl: str,
+    day_end_ts: int,
+    scratch_count: int,
+    scratch_dur_ms: int,
+    scratch_avg_dur_ms: int,
+    scratch_max_dur_ms: int,
+    night_scratch_count: int,
+    wear_minutes: int,
+    worn_loose_minutes: float,
+    alert_level: int,
+    local_date: str,
+    user_timezone: str | None,
+    now_ms: int,
+) -> None:
+    """Upsert 每日行为汇总到 pet_dog_daily_summary.d_{device_id}。"""
+    s_tbl = f"{settings.pg_schema_daily_summary}.d_{device_id}"
+
+    # 建表（幂等）
+    await db.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS {s_tbl} (
+            stat_date_ts        BIGINT        NOT NULL COMMENT '当天UTC零点 ms',
+            local_date          VARCHAR(12)   DEFAULT NULL,
+            user_timezone       VARCHAR(32)   DEFAULT NULL,
+            sleep_min           INT           NOT NULL DEFAULT 0 COMMENT '睡眠分钟',
+            move_min            INT           NOT NULL DEFAULT 0 COMMENT '运动分钟',
+            scratch_min         INT           NOT NULL DEFAULT 0 COMMENT '抓挠分钟',
+            scratch_count       INT           NOT NULL DEFAULT 0 COMMENT '抓挠次数',
+            scratch_avg_sec     INT           NOT NULL DEFAULT 0 COMMENT '平均每次秒',
+            scratch_max_sec     INT           NOT NULL DEFAULT 0 COMMENT '最长一次秒',
+            night_scratch_count INT           NOT NULL DEFAULT 0 COMMENT '夜间(22~06)抓挠次数',
+            wear_min            INT           NOT NULL DEFAULT 0 COMMENT '正常佩戴分钟',
+            loose_min           DECIMAL(8,1)  NOT NULL DEFAULT 0.0 COMMENT '松动分钟',
+            off_min             INT           NOT NULL DEFAULT 0 COMMENT '脱落/未佩戴分钟',
+            sleep_ratio         DECIMAL(4,3)  DEFAULT NULL COMMENT '睡眠/佩戴',
+            active_ratio        DECIMAL(4,3)  DEFAULT NULL COMMENT '运动/佩戴',
+            sleep_status        TINYINT       NOT NULL DEFAULT 0 COMMENT '0=绿 1=黄 2=红',
+            move_status         TINYINT       NOT NULL DEFAULT 0 COMMENT '0=绿 1=黄 2=红',
+            scratch_status      TINYINT       NOT NULL DEFAULT 0 COMMENT '0=绿 1=黄 2=红',
+            created_at          BIGINT        NOT NULL,
+            updated_at          BIGINT        NOT NULL,
+            PRIMARY KEY (stat_date_ts)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='每日行为汇总'
+    """))
+
+    # 按行为类型汇总各类分钟数
+    beh_rows = (await db.execute(text(f"""
+        SELECT behavior, COALESCE(SUM(ts_end - ts_start), 0) AS total_ms
+        FROM {b_tbl}
+        WHERE ts_start >= :day_start AND ts_start < :day_end
+        GROUP BY behavior
+    """), {"day_start": stat_date_ts, "day_end": day_end_ts})).fetchall()
+
+    beh_ms: dict[int, int] = {int(r.behavior): int(r.total_ms) for r in beh_rows}
+    sleep_min   = beh_ms.get(int(BehaviorLabel.SLEEP),    0) // 60_000
+    move_min    = beh_ms.get(int(BehaviorLabel.MOVEMENT), 0) // 60_000
+    scratch_min = int(scratch_dur_ms) // 60_000
+
+    loose_min = float(worn_loose_minutes)
+    off_min   = max(0, 1440 - wear_minutes - int(loose_min))
+
+    sleep_ratio  = round(sleep_min  / wear_minutes, 3) if wear_minutes > 0 else None
+    active_ratio = round(move_min   / wear_minutes, 3) if wear_minutes > 0 else None
+
+    s_status = _sleep_status(sleep_ratio  or 0.0, wear_minutes)
+    m_status = _move_status(active_ratio or 0.0, wear_minutes)
+    k_status = _scratch_status(alert_level)
+
+    await db.execute(text(f"""
+        INSERT INTO {s_tbl} (
+            stat_date_ts, local_date, user_timezone,
+            sleep_min, move_min, scratch_min,
+            scratch_count, scratch_avg_sec, scratch_max_sec, night_scratch_count,
+            wear_min, loose_min, off_min,
+            sleep_ratio, active_ratio,
+            sleep_status, move_status, scratch_status,
+            created_at, updated_at
+        ) VALUES (
+            :stat_date_ts, :local_date, :user_timezone,
+            :sleep_min, :move_min, :scratch_min,
+            :scratch_count, :scratch_avg_sec, :scratch_max_sec, :night_scratch_count,
+            :wear_min, :loose_min, :off_min,
+            :sleep_ratio, :active_ratio,
+            :sleep_status, :move_status, :scratch_status,
+            :now_ms, :now_ms
+        )
+        ON DUPLICATE KEY UPDATE
+            local_date          = VALUES(local_date),
+            user_timezone       = VALUES(user_timezone),
+            sleep_min           = VALUES(sleep_min),
+            move_min            = VALUES(move_min),
+            scratch_min         = VALUES(scratch_min),
+            scratch_count       = VALUES(scratch_count),
+            scratch_avg_sec     = VALUES(scratch_avg_sec),
+            scratch_max_sec     = VALUES(scratch_max_sec),
+            night_scratch_count = VALUES(night_scratch_count),
+            wear_min            = VALUES(wear_min),
+            loose_min           = VALUES(loose_min),
+            off_min             = VALUES(off_min),
+            sleep_ratio         = VALUES(sleep_ratio),
+            active_ratio        = VALUES(active_ratio),
+            sleep_status        = VALUES(sleep_status),
+            move_status         = VALUES(move_status),
+            scratch_status      = VALUES(scratch_status),
+            updated_at          = VALUES(updated_at)
+    """), {
+        "stat_date_ts":       stat_date_ts,
+        "local_date":         local_date,
+        "user_timezone":      user_timezone or "UTC",
+        "sleep_min":          sleep_min,
+        "move_min":           move_min,
+        "scratch_min":        scratch_min,
+        "scratch_count":      scratch_count,
+        "scratch_avg_sec":    scratch_avg_dur_ms // 1000,
+        "scratch_max_sec":    scratch_max_dur_ms // 1000,
+        "night_scratch_count": night_scratch_count,
+        "wear_min":           wear_minutes,
+        "loose_min":          loose_min,
+        "off_min":            off_min,
+        "sleep_ratio":        sleep_ratio,
+        "active_ratio":       active_ratio,
+        "sleep_status":       s_status,
+        "move_status":        m_status,
+        "scratch_status":     k_status,
+        "now_ms":             now_ms,
+    })
+    await db.commit()
 
 
 # ---------------------------------------------------------------------------
