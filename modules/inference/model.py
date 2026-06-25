@@ -1,7 +1,7 @@
-import pickle
 from enum import IntEnum
 from pathlib import Path
 
+import joblib
 import numpy as np
 from scipy import stats, signal
 
@@ -147,8 +147,7 @@ class BehaviorClassifier:
         path = Path(settings.model_path)
         if not path.exists():
             raise FileNotFoundError(f"模型文件不存在：{path}")
-        with open(path, "rb") as f:
-            self._model = pickle.load(f)
+        self._model = joblib.load(path)
 
         self._fs   = settings.imu_sample_rate
         self._win  = int(settings.window_seconds * self._fs)
