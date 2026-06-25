@@ -429,14 +429,15 @@ async def _process_device_imu(clf, device_id: int, device_sn: str,
                     break
 
             if max_ts > last_ts:
-                last_ts = max_ts
                 cur_ms = int(time.time() * 1000)
+                # 防止设备时钟异常导致断点被推到未来
+                last_ts = min(max_ts, cur_ms)
                 async with AsyncSessionLocal() as db:
                     await db.execute(text("""
                         UPDATE device_sync_state
                         SET last_processed_ts = :ts, last_sync_at = :now, updated_at = :now
                         WHERE device_id = :did
-                    """), {"ts": max_ts, "now": cur_ms, "did": device_id})
+                    """), {"ts": last_ts, "now": cur_ms, "did": device_id})
                     await db.commit()
             elif not failed:
                 break
