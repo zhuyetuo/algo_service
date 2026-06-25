@@ -19,3 +19,4 @@ pandas==2.2.2
 tqdm==4.66.4
 taospy==2.7.16
 loguru==0.7.2
+joblib
