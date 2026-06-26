@@ -157,7 +157,8 @@ async def _mark_success(device_id: int, day_ts: int) -> None:
 
 
 async def _retry_pending(clf, device_tz_map: dict[int, str],
-                         device_sn_map: dict[int, str]) -> None:
+                         device_sn_map: dict[int, str],
+                         device_bind_map: dict[int, int | None] | None = None) -> None:
     """重试所有 status='pending' 的失败记录。"""
     async with AsyncSessionLocal() as db:
         rows = (await db.execute(text("""
@@ -175,6 +176,7 @@ async def _retry_pending(clf, device_tz_map: dict[int, str],
         device_id, day_ts = int(row.device_id), row.day_ts
         tz = device_tz_map.get(device_id)
         sn = device_sn_map.get(device_id, "")
+        bind_id = (device_bind_map or {}).get(device_id)
         today_ts = _day_start_utc_ms(now_ms, tz)
         try:
             imu_rows = await asyncio.to_thread(td_fetch, sn, day_ts - 1)
@@ -184,7 +186,7 @@ async def _retry_pending(clf, device_tz_map: dict[int, str],
                 logger.warning("重试 设备={} 日期={} ({}) 无数据，跳过", device_id, day_ts,
                                _ts_to_local_str(day_ts, tz, date_only=True))
                 continue
-            await _process_day(clf, device_id, day_ts, day_rows, today_ts, tz)
+            await _process_day(clf, device_id, day_ts, day_rows, today_ts, tz, bind_id)
             await _mark_success(device_id, day_ts)
             logger.info("重试成功 设备={} 日期={} ({})", device_id, day_ts,
                         _ts_to_local_str(day_ts, tz, date_only=True))
@@ -196,7 +198,8 @@ async def _retry_pending(clf, device_tz_map: dict[int, str],
 
 async def _write_behavior(clf, device_id: int, day_ts: int,
                           day_rows: list[dict],
-                          user_timezone: str | None = None) -> int:
+                          user_timezone: str | None = None,
+                          bind_id: int | None = None) -> int:
     """对一批 IMU 数据执行推理并将行为事件写入行为表，返回写入的事件数。"""
     tbl = f"{settings.pg_schema_behavior}.d_{device_id}"
     day_rows_sorted = sorted(day_rows, key=lambda r: r["ts_ms"])
@@ -214,6 +217,7 @@ async def _write_behavior(clf, device_id: int, day_ts: int,
         await db.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {tbl} (
                 id            BIGINT        NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                bind_id       BIGINT,
                 ts_start      BIGINT        NOT NULL,
                 ts_end        BIGINT        NOT NULL,
                 behavior      SMALLINT      NOT NULL,
@@ -231,12 +235,13 @@ async def _write_behavior(clf, device_id: int, day_ts: int,
             dur_sec = round((ev["end_time"] - ev["start_time"]) / 1000.0, 2)
             await db.execute(text(f"""
                 INSERT IGNORE INTO {tbl}
-                    (ts_start, ts_end, behavior, duration_sec, confidence,
+                    (bind_id, ts_start, ts_end, behavior, duration_sec, confidence,
                      local_start, local_end, user_timezone)
                 VALUES
-                    (:ts_start, :ts_end, :behavior, :duration_sec, :confidence,
+                    (:bind_id, :ts_start, :ts_end, :behavior, :duration_sec, :confidence,
                      :local_start, :local_end, :tz)
             """), {
+                "bind_id":     bind_id,
                 "ts_start":    ev["start_time"],
                 "ts_end":      ev["end_time"],
                 "behavior":    btype,
@@ -253,18 +258,20 @@ async def _write_behavior(clf, device_id: int, day_ts: int,
 
 async def _process_day(clf, device_id: int, day_ts: int,
                        day_rows: list[dict], today_ts: int,
-                       user_timezone: str | None = None) -> None:
+                       user_timezone: str | None = None,
+                       bind_id: int | None = None) -> None:
     """写入行为事件并立即评估，专供重试逻辑使用（该天数据已完整）。"""
-    event_count = await _write_behavior(clf, device_id, day_ts, day_rows, user_timezone)
+    event_count = await _write_behavior(clf, device_id, day_ts, day_rows, user_timezone, bind_id)
     logger.info("设备={} 日期={} ({}) 事件数={}", device_id, day_ts,
                 _ts_to_local_str(day_ts, user_timezone, date_only=True), event_count)
     if day_ts < today_ts:
         async with AsyncSessionLocal() as db:
-            await assess_device(db, device_id, day_ts, user_timezone)
+            await assess_device(db, device_id, day_ts, user_timezone, bind_id)
 
 
 async def _sync_env_for_device(device_id: int, device_sn: str,
-                               user_timezone: str | None) -> None:
+                               user_timezone: str | None,
+                               bind_id: int | None = None) -> None:
     """从 TDengine env_data 拉取环境数据（温湿度 + 体温），按本地日期聚合后写入 pet_dog_environment.d_{device_id}。"""
     tbl = f"{settings.pg_schema_environment}.d_{device_id}"
 
@@ -289,6 +296,7 @@ async def _sync_env_for_device(device_id: int, device_sn: str,
         await db.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {tbl} (
                 ts              BIGINT       PRIMARY KEY,
+                bind_id         BIGINT,
                 env_temp        DECIMAL(5,2),
                 env_humidity    DECIMAL(5,1),
                 neck_temp       DECIMAL(5,2),
@@ -315,20 +323,22 @@ async def _sync_env_for_device(device_id: int, device_sn: str,
                 avg_neck_temp = round(sum(d["neck_temp"]) / len(d["neck_temp"]), 2) if d.get("neck_temp") else None
                 await db.execute(text(f"""
                     INSERT INTO {tbl}
-                        (ts, env_temp, env_humidity, neck_temp,
+                        (ts, bind_id, env_temp, env_humidity, neck_temp,
                          local_date, user_timezone, created_at, updated_at)
                     VALUES
-                        (:ts, :env_temp, :env_humi, :neck_temp,
+                        (:ts, :bind_id, :env_temp, :env_humi, :neck_temp,
                          :local_date, :tz, :now, :now)
                     ON DUPLICATE KEY UPDATE
-                        env_temp      = COALESCE(VALUES(env_temp),     env_temp),
-                        env_humidity  = COALESCE(VALUES(env_humidity), env_humidity),
-                        neck_temp     = COALESCE(VALUES(neck_temp),    neck_temp),
+                        bind_id       = COALESCE(VALUES(bind_id),      bind_id),
+                        env_temp      = COALESCE(VALUES(env_temp),      env_temp),
+                        env_humidity  = COALESCE(VALUES(env_humidity),  env_humidity),
+                        neck_temp     = COALESCE(VALUES(neck_temp),     neck_temp),
                         local_date    = VALUES(local_date),
                         user_timezone = VALUES(user_timezone),
                         updated_at    = VALUES(updated_at)
                 """), {
                     "ts": day_ts,
+                    "bind_id":   bind_id,
                     "env_temp":  avg_env_temp,
                     "env_humi":  avg_env_humi,
                     "neck_temp": avg_neck_temp,
@@ -360,7 +370,8 @@ async def _sync_env_for_device(device_id: int, device_sn: str,
 # ---------------------------------------------------------------------------
 
 async def _process_device_imu(clf, device_id: int, device_sn: str,
-                               user_tz: str | None, now_ms: int) -> None:
+                               user_tz: str | None, now_ms: int,
+                               bind_id: int | None = None) -> None:
     """拉取并推理单台设备的 IMU 新数据，写入行为事件并触发评估。"""
     today_ts = _day_start_utc_ms(now_ms, user_tz)
     try:
@@ -392,7 +403,7 @@ async def _process_device_imu(clf, device_id: int, device_sn: str,
                     if day_ts < today_ts:
                         try:
                             async with AsyncSessionLocal() as db:
-                                await assess_device(db, device_id, day_ts, user_tz)
+                                await assess_device(db, device_id, day_ts, user_tz, bind_id)
                             await _mark_success(device_id, day_ts)
                         except Exception as e:
                             logger.exception("设备 {} 日期 {} ({}) 评估失败", device_id,
@@ -408,7 +419,7 @@ async def _process_device_imu(clf, device_id: int, device_sn: str,
                     if day_ts < today_ts:
                         try:
                             async with AsyncSessionLocal() as db:
-                                await assess_device(db, device_id, day_ts, user_tz)
+                                await assess_device(db, device_id, day_ts, user_tz, bind_id)
                             await _mark_success(device_id, day_ts)
                         except Exception as e:
                             logger.exception("设备 {} 日期 {} ({}) 评估失败", device_id,
@@ -424,7 +435,7 @@ async def _process_device_imu(clf, device_id: int, device_sn: str,
             max_ts = last_ts
             for day_ts, day_rows in sorted(day_groups.items()):
                 try:
-                    event_count = await _write_behavior(clf, device_id, day_ts, day_rows, user_tz)
+                    event_count = await _write_behavior(clf, device_id, day_ts, day_rows, user_tz, bind_id)
                     logger.info("设备={} 日期={} ({}) 事件数={}", device_id,
                                 day_ts, _ts_to_local_str(day_ts, user_tz, date_only=True), event_count)
                     pending_assess.add(day_ts)
@@ -481,7 +492,7 @@ async def run_inference_cycle() -> None:
     async with AsyncSessionLocal() as db:
         try:
             bindings = (await db.execute(text(f"""
-                SELECT dbh.device_id, d.device_sn, dbh.user_id,
+                SELECT dbh.bind_id, dbh.device_id, d.device_sn, dbh.user_id,
                        COALESCE(u.timezone, 'UTC') AS timezone
                 FROM {settings.biz_schema}.device_bind_history dbh
                 JOIN {settings.biz_schema}.device d ON dbh.device_id = d.id
@@ -510,28 +521,34 @@ async def run_inference_cycle() -> None:
         logger.info("暂无活跃设备绑定，跳过本次推理周期")
         return
 
-    # device_id → timezone / device_sn 映射，供本次周期使用
+    # device_id → timezone / device_sn / bind_id 映射，供本次周期使用
     device_tz_map: dict[int, str] = {
         int(b.device_id): (b.timezone or "UTC") for b in bindings
     }
     device_sn_map: dict[int, str] = {
         int(b.device_id): (b.device_sn or "") for b in bindings
     }
+    device_bind_map: dict[int, int | None] = {
+        int(b.device_id): (int(b.bind_id) if hasattr(b, "bind_id") and b.bind_id else None)
+        for b in bindings
+    }
 
     async with AsyncSessionLocal() as db:
         for b in bindings:
             await db.execute(text("""
                 INSERT INTO device_sync_state
-                    (device_id, user_id, user_timezone, device_sn,
+                    (device_id, user_id, user_timezone, device_sn, bind_id,
                      last_processed_ts, last_sync_at, updated_at)
-                VALUES (:did, :uid, :tz, :sn, 0, :now, :now)
+                VALUES (:did, :uid, :tz, :sn, :bid, 0, :now, :now)
                 ON DUPLICATE KEY UPDATE
                     user_id       = VALUES(user_id),
                     user_timezone = VALUES(user_timezone),
                     device_sn     = VALUES(device_sn),
+                    bind_id       = VALUES(bind_id),
                     updated_at    = VALUES(updated_at)
             """), {"did": int(b.device_id), "uid": int(b.user_id),
                    "tz": b.timezone or "UTC", "sn": b.device_sn or "",
+                   "bid": int(b.bind_id) if hasattr(b, "bind_id") and b.bind_id else None,
                    "now": now_ms})
         await db.commit()
 
@@ -539,7 +556,7 @@ async def run_inference_cycle() -> None:
     logger.info("本次周期活跃设备 {} 台: {}", len(devices), ", ".join(str(d) for d in devices))
 
     # ── 2. 重试上次失败的记录 ────────────────────────────────────────────
-    await _retry_pending(clf, device_tz_map, device_sn_map)
+    await _retry_pending(clf, device_tz_map, device_sn_map, device_bind_map)
 
     sem = asyncio.Semaphore(settings.device_concurrency)
 
@@ -548,7 +565,7 @@ async def run_inference_cycle() -> None:
         async with sem:
             try:
                 sn = device_sn_map.get(device_id, "")
-                await _sync_env_for_device(device_id, sn, device_tz_map.get(device_id))
+                await _sync_env_for_device(device_id, sn, device_tz_map.get(device_id), device_bind_map.get(device_id))
             except ConnectionError as e:
                 logger.warning("设备 {} TDengine 无法连接，环境同步跳过 — {}", device_id, e)
             except Exception:
@@ -560,6 +577,6 @@ async def run_inference_cycle() -> None:
     async def _imu_task(device_id: int) -> None:
         async with sem:
             sn = device_sn_map.get(device_id, "")
-            await _process_device_imu(clf, device_id, sn, device_tz_map.get(device_id), now_ms)
+            await _process_device_imu(clf, device_id, sn, device_tz_map.get(device_id), now_ms, device_bind_map.get(device_id))
 
     await asyncio.gather(*[_imu_task(d) for d in devices])
