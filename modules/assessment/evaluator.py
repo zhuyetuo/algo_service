@@ -238,7 +238,7 @@ def _get_alert_level(consec: int) -> int:
 # 单设备日度评估
 # ---------------------------------------------------------------------------
 
-async def assess_device(db: AsyncSession, device_id: int, stat_date_ts: int, user_timezone: str | None = None) -> None:
+async def assess_device(db: AsyncSession, device_id: int, stat_date_ts: int, user_timezone: str | None = None, bind_id: int | None = None) -> None:
     """
     计算并写入单台设备的每日皮肤健康记录。
 
@@ -678,6 +678,7 @@ async def assess_device(db: AsyncSession, device_id: int, stat_date_ts: int, use
         local_date=_ts_to_local_date(stat_date_ts, user_timezone),
         user_timezone=user_timezone,
         now_ms=now_ms,
+        bind_id=bind_id,
     )
 
     if alert_level > 0:
@@ -711,6 +712,7 @@ async def _write_daily_summary(
     local_date: str,
     user_timezone: str | None,
     now_ms: int,
+    bind_id: int | None = None,
 ) -> None:
     """Upsert 每日行为汇总到 pet_dog_daily_summary.d_{device_id}。"""
     s_tbl = f"{settings.pg_schema_daily_summary}.d_{device_id}"
@@ -736,6 +738,7 @@ async def _write_daily_summary(
             sleep_status        TINYINT       NOT NULL DEFAULT 0 COMMENT '0=绿 1=黄 2=红',
             move_status         TINYINT       NOT NULL DEFAULT 0 COMMENT '0=绿 1=黄 2=红',
             scratch_status      TINYINT       NOT NULL DEFAULT 0 COMMENT '0=绿 1=黄 2=红',
+            bind_id             BIGINT        DEFAULT NULL,
             created_at          BIGINT        NOT NULL,
             updated_at          BIGINT        NOT NULL,
             PRIMARY KEY (stat_date_ts)
@@ -773,7 +776,7 @@ async def _write_daily_summary(
             wear_min, loose_min, off_min,
             sleep_ratio, active_ratio,
             sleep_status, move_status, scratch_status,
-            created_at, updated_at
+            bind_id, created_at, updated_at
         ) VALUES (
             :stat_date_ts, :local_date, :user_timezone,
             :sleep_min, :move_min, :scratch_min,
@@ -781,7 +784,7 @@ async def _write_daily_summary(
             :wear_min, :loose_min, :off_min,
             :sleep_ratio, :active_ratio,
             :sleep_status, :move_status, :scratch_status,
-            :now_ms, :now_ms
+            :bind_id, :now_ms, :now_ms
         )
         ON DUPLICATE KEY UPDATE
             local_date          = VALUES(local_date),
@@ -801,6 +804,7 @@ async def _write_daily_summary(
             sleep_status        = VALUES(sleep_status),
             move_status         = VALUES(move_status),
             scratch_status      = VALUES(scratch_status),
+            bind_id             = VALUES(bind_id),
             updated_at          = VALUES(updated_at)
     """), {
         "stat_date_ts":       stat_date_ts,
@@ -821,6 +825,7 @@ async def _write_daily_summary(
         "sleep_status":       s_status,
         "move_status":        m_status,
         "scratch_status":     k_status,
+        "bind_id":            bind_id,
         "now_ms":             now_ms,
     })
     await db.commit()
