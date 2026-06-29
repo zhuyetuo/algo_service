@@ -27,8 +27,11 @@ curl http://localhost:8000/health
 ```
 
 ```bash
-# 查看日志
-docker logs algo_service -f
+# 查看最新日志（实时）
+docker logs algo_service --tail 50 -f
+
+# 查看最新 50 条日志（不跟随）
+docker logs algo_service --tail 50
 
 # 重启服务（拉取最新代码后重建）
 docker compose down && git pull && docker compose up -d --build
@@ -72,18 +75,24 @@ curl -s -u root:taosdata \
 **查看算法服务写入的数据：**
 
 ```bash
-# 同步断点
+# 同步断点（含 bind_id）
 docker exec local-mysql8 mysql -h 192.168.33.253 -u root -pHicc-mysql-2026 \
-  -e "SELECT device_id, device_sn, user_timezone, last_processed_ts, last_env_ts FROM algo.device_sync_state;" 2>/dev/null
+  -e "SELECT device_id, device_sn, bind_id, user_timezone, last_processed_ts, last_env_ts FROM algo.device_sync_state;" 2>/dev/null
 
 # 行为事件（设备 70）
 docker exec local-mysql8 mysql -h 192.168.33.253 -u root -pHicc-mysql-2026 \
-  -e "SELECT behavior, duration_sec, local_start, local_end FROM pet_dog_behavior.d_70 ORDER BY ts_start DESC LIMIT 10;" 2>/dev/null
+  -e "SELECT bind_id, behavior, duration_sec, local_start, local_end FROM pet_dog_behavior.d_70 ORDER BY ts_start DESC LIMIT 10;" 2>/dev/null
 
 # 环境数据（设备 70）
 docker exec local-mysql8 mysql -h 192.168.33.253 -u root -pHicc-mysql-2026 \
-  -e "SELECT local_date, env_temp, env_humidity, neck_temp FROM pet_dog_environment.d_70;" 2>/dev/null
+  -e "SELECT bind_id, local_date, env_temp, env_humidity, neck_temp FROM pet_dog_environment.d_70;" 2>/dev/null
+
+# 每日行为汇总（设备 70）
+docker exec local-mysql8 mysql -h 192.168.33.253 -u root -pHicc-mysql-2026 \
+  -e "SELECT bind_id, local_date, sleep_min, move_min, scratch_count, sleep_status, move_status, scratch_status FROM pet_dog_daily_summary.d_70 ORDER BY stat_date_ts DESC LIMIT 10;" 2>/dev/null
 ```
+
+> **bind_id 说明**：一台设备可先后绑定不同宠物（如原主人的狗去世后更换新狗）。所有数据表均包含 `bind_id` 字段，对应 `hiccpet_petos.device_bind_history.bind_id`，可按绑定期过滤历史数据，避免不同宠物的数据混淆。
 
 ---
 
@@ -92,7 +101,7 @@ docker exec local-mysql8 mysql -h 192.168.33.253 -u root -pHicc-mysql-2026 \
 - [项目概述](#项目概述)
 - [目录结构](#目录结构)
 - [算法流程](#算法流程)
-- [特征说明（93 维）](#特征说明93-维)
+- [特征说明（78 维）](#特征说明78-维)
 - [配置项说明](#配置项说明)
 - [测试与验证](#测试与验证)
 
@@ -111,7 +120,7 @@ docker exec local-mysql8 mysql -h 192.168.33.253 -u root -pHicc-mysql-2026 \
 
 核心功能：
 
-1. **行为识别**：每 15 秒（默认）从 TDengine 拉取最新 IMU 数据，滑动窗口分割后提取 93 维特征，LightGBM 分类为 MOVEMENT / SLEEP / SCRATCH / UNKNOWN，写入 `pet_dog_behavior.d_{device_id}` 表（含本地时间和用户时区）。
+1. **行为识别**：每 15 秒（默认）从 TDengine 拉取最新 IMU 数据，滑动窗口分割后提取 78 维特征（与 imu_train 特征空间对齐），LightGBM 分类为 MOVEMENT(1) / SLEEP(2) / SCRATCH(3)，写入 `pet_dog_behavior.d_{device_id}` 表（含本地时间、用户时区、bind_id）。
 2. **皮肤健康日评估**：每天凌晨 03:00 UTC 汇总抓挠次数，与个体基线对比计算 Z-score，三层阈值触发分级告警，写入评估表。
 3. **基线更新**：每天凌晨 02:00 UTC 用过去 30 天有效数据更新个体基线（EWMA + 软冻结），写入 `pet_dog_scratch_baseline.pet_skin_baseline` 表。
 4. **环境数据同步**：每个推理周期同步 TDengine `env_data` 的环境温湿度和体温，按本地日期聚合后写入 `pet_dog_environment.d_{device_id}` 表。
@@ -134,7 +143,7 @@ algo_service/
 │
 ├── modules/
 │   ├── inference/
-│   │   ├── model.py             特征提取、滑动窗口、LightGBM 推理
+│   │   ├── model.py             特征提取（78 维）、滑动窗口、LightGBM 推理
 │   │   └── handler.py           POST /api/v1/inference/predict 端点
 │   ├── assessment/
 │   │   └── evaluator.py         日评估引擎、GET /api/v1/assessment/report/{device_id}
@@ -145,10 +154,13 @@ algo_service/
 │   └── jobs.py                  APScheduler 三个定时任务
 │
 ├── weights/
-│   └── behavior_lgbm.pkl        训练好的模型（由 train/train.py 生成，不纳入版本库）
+│   └── ml_lgbm.pkl              imu_train 训练好的模型（joblib 格式，不纳入版本库）
+│
+├── database_infra/              Git 子模块：数据库基础设施（DDL 等）
+├── imu_train/                   Git 子模块：IMU 行为分类模型训练项目
 │
 ├── train/
-│   └── train.py                 模型训练脚本（合成数据 + LightGBM）
+│   └── train.py                 旧版模型训练脚本（已由 imu_train 子模块替代）
 │
 └── tests/
     └── unit/                    单元测试（无需真实数据库，88 个测试）
@@ -163,10 +175,10 @@ algo_service/
 ```
 TDengine imu_data (accel_x/y/z, gyro_x/y/z, 50 Hz)
   └─ 滑动窗口分割 (3 s / 50% 重叠 → 每窗口 150 样本)
-       └─ 特征提取 (93 维，见下表)
+       └─ 特征提取 (78 维 = 6 轴 × 13 维：9 时域 + 4 Welch PSD 频域)
             └─ LightGBM 分类 → MOVEMENT(1) / SLEEP(2) / SCRATCH(3)
                  └─ 合并连续同标签窗口 → 行为事件 (start_time, end_time, confidence)
-                      └─ 写入 pet_dog_behavior.d_{device_id}（含 local_start、user_timezone）
+                      └─ 写入 pet_dog_behavior.d_{device_id}（含 local_start、user_timezone、bind_id）
 ```
 
 ### 2. 日评估（评估模块）
@@ -197,7 +209,13 @@ TDengine imu_data (accel_x/y/z, gyro_x/y/z, 50 Hz)
 
 ---
 
-## 特征说明（93 维）
+## 特征说明（78 维）
+
+特征空间与 `imu_train` 子模块保持完全一致，共 78 维：
+
+| 轴 | 时域（9 维） | 频域（4 维，Welch PSD） |
+|----|------------|----------------------|
+| ax, ay, az, gx, gy, gz | 均值、标准差、最小值、最大值、极差、RMS、偏度、峰度、过零率 | 频谱均值、频谱标准差、主频、频谱熵 |
 
 详见 [modules/inference/README.md](modules/inference/README.md)。
 
@@ -225,14 +243,28 @@ TDengine imu_data (accel_x/y/z, gyro_x/y/z, 50 Hz)
 
 ## 模型训练
 
-模型文件 `weights/behavior_lgbm.pkl` 不纳入版本库，需在本机训练后再启动服务。
+模型由 `imu_train` 子模块训练，使用 LightGBM，输出 `ml_lgbm.pkl`（joblib 格式）。
 
 ```bash
-# 在项目根目录执行（需要先安装 requirements.txt）
-python train/train.py
+# 初始化子模块（首次克隆后执行）
+git submodule update --init --recursive
+
+# 训练（在 imu_train 目录下执行，详见子模块 README）
+cd imu_train && python train.py
+
+# 将训练好的模型复制到 weights/
+cp imu_train/output/ml_lgbm.pkl weights/
 ```
 
-首次运行约 20–25 秒；训练数据缓存在 `train/data/`，再次运行约 5 秒。
+模型文件 `weights/ml_lgbm.pkl` 不纳入版本库，需训练后手动放入。
+
+**部署时更新模型：**
+
+```bash
+# 将新模型文件复制到容器内
+docker cp weights/ml_lgbm.pkl algo_service:/app/weights/ml_lgbm.pkl
+docker restart algo_service
+```
 
 ---
 
