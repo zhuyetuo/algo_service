@@ -16,11 +16,11 @@ class BehaviorLabel(IntEnum):
 
 
 # imu_train 输出标签 → BehaviorLabel 映射
-# remap_3class.yaml 顺序：睡觉=0, 活动=1, 抓挠=2
+# processed_custom/20hz/ml_rf.json classes 顺序：抓挠=0, 活动=1, 睡觉=2
 _LABEL_MAP: dict[int, int] = {
-    0: BehaviorLabel.SLEEP,
+    0: BehaviorLabel.SCRATCH,
     1: BehaviorLabel.MOVEMENT,
-    2: BehaviorLabel.SCRATCH,
+    2: BehaviorLabel.SLEEP,
 }
 
 

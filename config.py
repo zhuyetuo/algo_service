@@ -26,14 +26,16 @@ class Settings(BaseSettings):
     # 日志级别
     log_level: str = "info"
 
-    # LightGBM 模型文件路径
-    model_path: str = "weights/behavior_lgbm.pkl"
+    # 模型文件路径（imu_train 训练产出，joblib 格式）
+    model_path: str = "weights/ml_rf.pkl"
 
-    # IMU 采样率（Hz）
-    imu_sample_rate: int = 50
+    # IMU 采样率（Hz）— 设备实际上报采样率，与 imu_train 训练时 --hz 参数一致
+    # 历史值: 50; 当前设备固件上报 20Hz
+    imu_sample_rate: int = 20
 
-    # 分类滑动窗口配置
-    window_seconds: int = 3
+    # 分类滑动窗口配置（与 imu_train configs/data.yaml 保持一致）
+    # window_seconds=2.0, stride=1.0s → overlap=0.5
+    window_seconds: float = 2.0
     window_overlap: float = 0.5
 
     # 调度器：拉取并推理的时间间隔（分钟），可通过环境变量修改，无需重新部署
