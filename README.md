@@ -30,6 +30,9 @@ curl http://localhost:8000/health
 # 查看最新日志（实时）
 docker logs algo_service --tail 50 -f
 
+# 查看最新 50 条日志（不跟随）
+docker logs algo_service --tail 50
+
 # 重启服务（拉取最新代码后重建）
 docker compose down && git pull && docker compose up -d --build
 
