@@ -34,6 +34,11 @@ def _table() -> str:
     return f"{settings.td_database}.{settings.td_supertable}"
 
 
+def _normalize_sn(device_sn: str) -> str:
+    """将冒号格式（EA:CB:3E:CF:00:1D）转为 TDengine 存储格式（EA_CB_3E_CF_00_1D）。"""
+    return device_sn.replace(":", "_")
+
+
 def _ts_to_ms(ts) -> int:
     if isinstance(ts, int):
         return ts
@@ -65,7 +70,7 @@ def td_fetch_env(device_sn: str, last_ts_ms: int) -> list[dict]:
         _exec(cursor, f"""
             SELECT ts, temperature, humidity, body_temp
             FROM {table}
-            WHERE device_sn = '{device_sn}'
+            WHERE device_sn = '{_normalize_sn(device_sn)}'
               AND ts > {last_ts_ms}
             ORDER BY ts
             LIMIT {settings.td_batch_size}
@@ -98,7 +103,7 @@ def td_is_charging(device_sn: str) -> bool:
         _exec(cursor, f"""
             SELECT LAST(charging)
             FROM {table}
-            WHERE device_sn = '{device_sn}'
+            WHERE device_sn = '{_normalize_sn(device_sn)}'
         """)
         row = cursor.fetchone()
         return bool(row and row[0] == 1)
@@ -114,7 +119,7 @@ def td_fetch(device_sn: str, last_ts_ms: int) -> list[dict]:
         _exec(cursor, f"""
             SELECT ts, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
             FROM {_table()}
-            WHERE device_sn = '{device_sn}'
+            WHERE device_sn = '{_normalize_sn(device_sn)}'
               AND ts > {last_ts_ms}
             ORDER BY ts
             LIMIT {settings.td_batch_size}
