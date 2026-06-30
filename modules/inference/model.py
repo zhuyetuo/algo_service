@@ -180,6 +180,23 @@ def windows_to_events(
 
 
 # ---------------------------------------------------------------------------
+# 逐窗口标签平滑：滑动多数票，去除单窗口随机噪声翻转
+# ---------------------------------------------------------------------------
+
+def _majority_smooth(labels: np.ndarray, k: int = 5) -> np.ndarray:
+    """k=5 → 每个位置参考前后各 2 帧，孤立的 1~2 窗口翻转被邻居多数覆盖。"""
+    if len(labels) < k:
+        return labels
+    half = k // 2
+    smoothed = labels.copy()
+    for i in range(len(labels)):
+        window = labels[max(0, i - half): i + half + 1]
+        vals, counts = np.unique(window, return_counts=True)
+        smoothed[i] = vals[np.argmax(counts)]
+    return smoothed
+
+
+# ---------------------------------------------------------------------------
 # 模型封装
 # ---------------------------------------------------------------------------
 
@@ -235,8 +252,12 @@ class BehaviorClassifier:
         else:
             confidences = np.ones(len(labels))
 
-        # 置信度低于阈值时标记为 UNKNOWN（与 imu_train --confidence_threshold 0.6 一致）
-        labels = np.where(confidences >= self._conf_threshold, labels, BehaviorLabel.UNKNOWN)
+        # 置信度低于阈值时标记为 UNKNOWN
+        if self._conf_threshold > 0:
+            labels = np.where(confidences >= self._conf_threshold, labels, BehaviorLabel.UNKNOWN)
+
+        # 滑动多数票平滑（k=5，±2帧），消除单窗口随机噪声翻转
+        labels = _majority_smooth(labels, k=5)
 
         return windows_to_events(
             labels, confidences, self._win, self._step, self._fs, base_ts_ms
