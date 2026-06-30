@@ -144,6 +144,8 @@ def windows_to_events(
 
 class BehaviorClassifier:
     def __init__(self):
+        import logging
+        logger = logging.getLogger(__name__)
         path = Path(settings.model_path)
         if not path.exists():
             raise FileNotFoundError(f"模型文件不存在：{path}")
@@ -152,6 +154,12 @@ class BehaviorClassifier:
         self._fs   = settings.imu_sample_rate
         self._win  = int(settings.window_seconds * self._fs)
         self._step = int(self._win * (1 - settings.window_overlap))
+
+        model_type = type(self._model).__name__
+        logger.info(
+            "行为分类器已加载 model=%s type=%s fs=%dHz window=%.1fs step=%ds",
+            path, model_type, self._fs, settings.window_seconds, self._step // self._fs,
+        )
 
     def predict(
         self,
