@@ -34,6 +34,13 @@ from modules.inference.model import BehaviorLabel, get_classifier
 
 MAX_RETRIES = 3
 
+_BEHAVIOR_ZH: dict[int, str] = {
+    int(BehaviorLabel.UNKNOWN):  "未知",
+    int(BehaviorLabel.MOVEMENT): "活动",
+    int(BehaviorLabel.SLEEP):    "睡觉",
+    int(BehaviorLabel.SCRATCH):  "抓挠",
+}
+
 _scheduler = BackgroundScheduler()
 _main_loop: asyncio.AbstractEventLoop | None = None
 
@@ -221,6 +228,7 @@ async def _write_behavior(clf, device_id: int, day_ts: int,
                 ts_start      BIGINT        NOT NULL,
                 ts_end        BIGINT        NOT NULL,
                 behavior      SMALLINT      NOT NULL,
+                behavior_label VARCHAR(8),
                 duration_sec  DECIMAL(10,2) NOT NULL,
                 confidence    DECIMAL(5,3)  NOT NULL,
                 local_start   VARCHAR(24),
@@ -235,21 +243,22 @@ async def _write_behavior(clf, device_id: int, day_ts: int,
             dur_sec = round((ev["end_time"] - ev["start_time"]) / 1000.0, 2)
             await db.execute(text(f"""
                 INSERT IGNORE INTO {tbl}
-                    (bind_id, ts_start, ts_end, behavior, duration_sec, confidence,
+                    (bind_id, ts_start, ts_end, behavior, behavior_label, duration_sec, confidence,
                      local_start, local_end, user_timezone)
                 VALUES
-                    (:bind_id, :ts_start, :ts_end, :behavior, :duration_sec, :confidence,
+                    (:bind_id, :ts_start, :ts_end, :behavior, :behavior_label, :duration_sec, :confidence,
                      :local_start, :local_end, :tz)
             """), {
-                "bind_id":     bind_id,
-                "ts_start":    ev["start_time"],
-                "ts_end":      ev["end_time"],
-                "behavior":    btype,
-                "duration_sec": dur_sec,
-                "confidence":  ev["confidence"],
-                "local_start": _ts_to_local_str(ev["start_time"], tz),
-                "local_end":   _ts_to_local_str(ev["end_time"],   tz),
-                "tz":          tz,
+                "bind_id":        bind_id,
+                "ts_start":       ev["start_time"],
+                "ts_end":         ev["end_time"],
+                "behavior":       btype,
+                "behavior_label": _BEHAVIOR_ZH.get(btype, "未知"),
+                "duration_sec":   dur_sec,
+                "confidence":     ev["confidence"],
+                "local_start":    _ts_to_local_str(ev["start_time"], tz),
+                "local_end":      _ts_to_local_str(ev["end_time"],   tz),
+                "tz":             tz,
             })
         await db.commit()
 
