@@ -139,6 +139,26 @@ def windows_to_events(
 
 
 # ---------------------------------------------------------------------------
+# 逐窗口标签平滑：滑动多数票，消除决策边界附近的帧间跳变
+# ---------------------------------------------------------------------------
+
+def _majority_smooth(labels: np.ndarray, k: int = 5) -> np.ndarray:
+    """
+    对长度为 N 的标签序列做半径 k//2 的滑动多数票平滑。
+    k=5 意味着每个位置参考前后各 2 帧，5 帧里少数类被多数类覆盖。
+    """
+    if len(labels) < k:
+        return labels
+    half = k // 2
+    smoothed = labels.copy()
+    for i in range(len(labels)):
+        window = labels[max(0, i - half): i + half + 1]
+        vals, counts = np.unique(window, return_counts=True)
+        smoothed[i] = vals[np.argmax(counts)]
+    return smoothed
+
+
+# ---------------------------------------------------------------------------
 # 模型封装
 # ---------------------------------------------------------------------------
 
@@ -188,6 +208,9 @@ class BehaviorClassifier:
             confidences = proba.max(axis=1)
         else:
             confidences = np.ones(len(labels))
+
+        # 滑动多数票平滑（窗口 5），消除模型在决策边界附近的逐帧跳变
+        labels = _majority_smooth(labels, k=5)
 
         return windows_to_events(
             labels, confidences, self._win, self._step, self._fs, base_ts_ms
