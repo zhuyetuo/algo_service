@@ -448,8 +448,9 @@ async def _process_device_imu(clf, device_id: int, device_sn: str,
                     break
 
             if max_ts > last_ts:
-                last_ts = max_ts
                 cur_ms = int(time.time() * 1000)
+                # 断点不超过当前时间，防止设备时钟偏快导致断点跑到未来
+                last_ts = min(max_ts, cur_ms)
                 async with AsyncSessionLocal() as db:
                     await db.execute(text("""
                         UPDATE device_sync_state
