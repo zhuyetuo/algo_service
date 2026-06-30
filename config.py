@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     window_seconds: float = 2.0
     window_overlap: float = 0.5
 
+    # 置信度阈值：低于此值的窗口标记为 UNKNOWN（与 imu_train --confidence_threshold 一致）
+    confidence_threshold: float = 0.6
+
     # 调度器：拉取并推理的时间间隔（分钟），可通过环境变量修改，无需重新部署
     fetch_interval_sec: int = 15
 

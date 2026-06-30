@@ -25,7 +25,51 @@ _LABEL_MAP: dict[int, int] = {
 
 
 # ---------------------------------------------------------------------------
-# 特征提取（与 training/imu_train/src/ml/features.py 保持一致，共 78 维）
+# 重力轴对齐（与 imu_train/src/data/gravity_align.py 完全一致）
+# 训练时每个窗口都经过此变换，推理时必须同步执行
+# ---------------------------------------------------------------------------
+
+def _gravity_align(window: np.ndarray) -> np.ndarray:
+    """
+    将单个窗口的 acc+gyr 旋转到"重力 → +Z"的标准坐标系。
+    window : (T, 6)，前 3 列 acc，后 3 列 gyr
+    """
+    acc = window[:, :3]
+    gyr = window[:, 3:6]
+
+    g_est = acc.mean(axis=0)
+    g_norm = np.linalg.norm(g_est)
+    if g_norm < 1e-6:
+        return window
+
+    g_unit = g_est / g_norm
+    ref = np.array([0.0, 0.0, 1.0])
+    dot = float(np.clip(np.dot(g_unit, ref), -1.0, 1.0))
+
+    if dot > 0.9999:
+        return window  # 已对齐
+
+    if dot < -0.9999:
+        R = np.diag(np.array([1.0, -1.0, -1.0]))
+    else:
+        axis = np.cross(g_unit, ref)
+        axis /= np.linalg.norm(axis)
+        angle = np.arccos(dot)
+        K = np.array([
+            [0.0,      -axis[2],  axis[1]],
+            [axis[2],   0.0,     -axis[0]],
+            [-axis[1],  axis[0],  0.0    ],
+        ])
+        R = np.eye(3) + np.sin(angle) * K + (1.0 - np.cos(angle)) * (K @ K)
+
+    out = window.copy()
+    out[:, :3] = (R @ acc.T).T
+    out[:, 3:6] = (R @ gyr.T).T
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 特征提取（与 imu_train/src/ml/features.py 保持一致，共 78 维）
 # ---------------------------------------------------------------------------
 
 def _time_features(x: np.ndarray) -> np.ndarray:
@@ -110,11 +154,9 @@ def windows_to_events(
     for idx in range(1, len(labels)):
         lbl = int(labels[idx])
         if lbl == cur_label:
-            # 同一标签，累加置信度
             cur_conf_sum += float(confidences[idx])
             cur_conf_cnt += 1
         else:
-            # 标签切换，输出当前事件
             end_sample = idx * step_samples + window_samples
             events.append({
                 "behavior_type": cur_label,
@@ -127,7 +169,6 @@ def windows_to_events(
             cur_conf_cnt = 1
             cur_start_sample = idx * step_samples
 
-    # 输出最后一段事件
     end_sample = (len(labels) - 1) * step_samples + window_samples
     events.append({
         "behavior_type": cur_label,
@@ -154,11 +195,13 @@ class BehaviorClassifier:
         self._fs   = settings.imu_sample_rate
         self._win  = int(settings.window_seconds * self._fs)
         self._step = int(self._win * (1 - settings.window_overlap))
+        self._conf_threshold = settings.confidence_threshold
 
         model_type = type(self._model).__name__
         logger.info(
-            "行为分类器已加载 model=%s type=%s fs=%dHz window=%.1fs step=%ds",
-            path, model_type, self._fs, settings.window_seconds, self._step // self._fs,
+            "行为分类器已加载 model=%s type=%s fs=%dHz window=%.1fs step=%ds conf_threshold=%.2f",
+            path, model_type, self._fs, settings.window_seconds,
+            self._step // self._fs, self._conf_threshold,
         )
 
     def predict(
@@ -176,10 +219,13 @@ class BehaviorClassifier:
         if not windows:
             return []
 
-        X = np.stack([extract_features(w, self._fs) for w in windows])
+        # 重力轴对齐：与训练预处理保持一致（imu_train 默认开启）
+        aligned = [_gravity_align(w) for w in windows]
+
+        X = np.stack([extract_features(w, self._fs) for w in aligned])
         raw_labels = self._model.predict(X)
 
-        # imu_train 输出 0/1/2，映射到 BehaviorLabel（SLEEP=2/MOVEMENT=1/SCRATCH=3）
+        # imu_train 输出 0/1/2，映射到 BehaviorLabel（SCRATCH=3/MOVEMENT=1/SLEEP=2）
         labels = np.array([_LABEL_MAP.get(int(l), BehaviorLabel.UNKNOWN) for l in raw_labels])
 
         # predict_proba 返回每个类别的概率分布，最大值即为置信度
@@ -188,6 +234,9 @@ class BehaviorClassifier:
             confidences = proba.max(axis=1)
         else:
             confidences = np.ones(len(labels))
+
+        # 置信度低于阈值时标记为 UNKNOWN（与 imu_train --confidence_threshold 0.6 一致）
+        labels = np.where(confidences >= self._conf_threshold, labels, BehaviorLabel.UNKNOWN)
 
         return windows_to_events(
             labels, confidences, self._win, self._step, self._fs, base_ts_ms
