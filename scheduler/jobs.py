@@ -487,6 +487,11 @@ async def run_inference_cycle() -> None:
         logger.warning("未找到模型文件 — 跳过本次推理周期")
         return
 
+    logger.info(
+        "使用模型 type={} fs={}Hz window={}s",
+        type(clf._model).__name__, clf._fs, settings.window_seconds,
+    )
+
     now_ms = int(time.time() * 1000)
 
     # ── 1. 同步活跃设备绑定关系和用户时区 ────────────────────────────────
