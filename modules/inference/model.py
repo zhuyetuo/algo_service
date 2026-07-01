@@ -112,14 +112,16 @@ def _freq_features(x: np.ndarray, fs: int) -> np.ndarray:
 def extract_features(window: np.ndarray, fs: int) -> np.ndarray:
     """
     window : (n_samples, 6) float32，列顺序为 [ax, ay, az, gx, gy, gz]
-    返回：78 维特征向量（6 轴 × 13 维），与 imu_train 特征空间一致。
+    返回：78 维特征向量，顺序与 imu_train/src/ml/features.py 完全一致：
+      先输出全部 6 轴的时域特征（6×9=54），再输出全部 6 轴的频域特征（6×4=24）。
     """
-    parts = []
+    time_parts = []
+    freq_parts = []
     for i in range(6):
         col = window[:, i]
-        parts.append(_time_features(col))   # 9 维
-        parts.append(_freq_features(col, fs))  # 4 维
-    return np.concatenate(parts)
+        time_parts.append(_time_features(col))
+        freq_parts.append(_freq_features(col, fs))
+    return np.concatenate(time_parts + freq_parts)
 
 
 # ---------------------------------------------------------------------------
