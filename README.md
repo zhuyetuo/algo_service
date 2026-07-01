@@ -33,6 +33,10 @@ docker logs algo_service --tail 50 -f
 # 查看最新 50 条日志（不跟随）
 docker logs algo_service --tail 50
 
+# 开启逐窗口推理详情（每秒一行，含片上时间和置信度）
+VERBOSE_INFERENCE=true docker compose up -d
+docker logs algo_service -f | grep "片上"
+
 # 重启服务（拉取最新代码后重建）
 docker compose down && git pull && docker compose up -d --build
 
