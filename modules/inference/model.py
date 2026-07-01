@@ -215,6 +215,7 @@ def _majority_smooth(labels: np.ndarray, k: int = 5) -> np.ndarray:
 
 class BehaviorClassifier:
     def __init__(self):
+        import json
         import logging
         logger = logging.getLogger(__name__)
         path = Path(settings.model_path)
@@ -233,6 +234,36 @@ class BehaviorClassifier:
             path, model_type, self._fs, settings.window_seconds,
             self._step // self._fs, self._conf_threshold,
         )
+
+        # 读取训练元数据（ml_rf.json），校验推理参数是否与训练一致
+        json_path = path.with_suffix(".json")
+        if json_path.exists():
+            try:
+                meta = json.loads(json_path.read_text())
+                t_hz       = meta.get("hz")
+                t_window_s = meta.get("window_s")
+                t_stride_s = meta.get("stride_s")
+                t_ga       = meta.get("gravity_aligned")
+                t_classes  = meta.get("classes", [])
+                if t_hz:
+                    logger.info(
+                        "模型训练参数: fs=%dHz window=%ss stride=%ss gravity_align=%s classes=%s",
+                        t_hz, t_window_s, t_stride_s, t_ga, t_classes,
+                    )
+                    warns = []
+                    if t_hz != self._fs:
+                        warns.append(f"采样率 训练={t_hz}Hz 推理={self._fs}Hz")
+                    if t_window_s and abs(t_window_s - settings.window_seconds) > 0.01:
+                        warns.append(f"窗口 训练={t_window_s}s 推理={settings.window_seconds}s")
+                    t_stride = round(t_window_s * (1 - settings.window_overlap), 3) if t_window_s else None
+                    if t_stride_s and t_stride and abs(t_stride_s - t_stride) > 0.01:
+                        warns.append(f"步长 训练={t_stride_s}s 推理={t_stride}s")
+                    if t_ga is not None and bool(t_ga) is False:
+                        warns.append("训练时未使用重力对齐，但推理开启了重力对齐")
+                    for w in warns:
+                        logger.warning("⚠️  参数不一致: %s", w)
+            except Exception as e:
+                logger.warning("读取模型元数据失败: %s", e)
 
     def predict(
         self,
