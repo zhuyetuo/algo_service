@@ -229,41 +229,52 @@ class BehaviorClassifier:
         self._conf_threshold = settings.confidence_threshold
 
         model_type = type(self._model).__name__
-        logger.info(
-            "行为分类器已加载 model=%s type=%s fs=%dHz window=%.1fs step=%ds conf_threshold=%.2f",
-            path, model_type, self._fs, settings.window_seconds,
-            self._step // self._fs, self._conf_threshold,
-        )
+        infer_stride_s = round(self._step / self._fs, 3)
 
-        # 读取训练元数据（ml_rf.json），校验推理参数是否与训练一致
+        logger.info("=" * 55)
+        logger.info("行为分类器加载完成")
+        logger.info("  模型文件 : %s  (%s)", path, model_type)
+
+        # 读取训练元数据（ml_rf.json），对比推理参数
         json_path = path.with_suffix(".json")
+        t_hz = t_window_s = t_stride_s = t_ga = t_classes = None
         if json_path.exists():
             try:
-                meta = json.loads(json_path.read_text())
+                meta    = json.loads(json_path.read_text())
                 t_hz       = meta.get("hz")
                 t_window_s = meta.get("window_s")
                 t_stride_s = meta.get("stride_s")
                 t_ga       = meta.get("gravity_aligned")
                 t_classes  = meta.get("classes", [])
-                if t_hz:
-                    logger.info(
-                        "模型训练参数: fs=%dHz window=%ss stride=%ss gravity_align=%s classes=%s",
-                        t_hz, t_window_s, t_stride_s, t_ga, t_classes,
-                    )
-                    warns = []
-                    if t_hz != self._fs:
-                        warns.append(f"采样率 训练={t_hz}Hz 推理={self._fs}Hz")
-                    if t_window_s and abs(t_window_s - settings.window_seconds) > 0.01:
-                        warns.append(f"窗口 训练={t_window_s}s 推理={settings.window_seconds}s")
-                    t_stride = round(t_window_s * (1 - settings.window_overlap), 3) if t_window_s else None
-                    if t_stride_s and t_stride and abs(t_stride_s - t_stride) > 0.01:
-                        warns.append(f"步长 训练={t_stride_s}s 推理={t_stride}s")
-                    if t_ga is not None and bool(t_ga) is False:
-                        warns.append("训练时未使用重力对齐，但推理开启了重力对齐")
-                    for w in warns:
-                        logger.warning("⚠️  参数不一致: %s", w)
             except Exception as e:
                 logger.warning("读取模型元数据失败: %s", e)
+
+        if t_hz:
+            logger.info("  训练参数 : fs=%dHz  window=%ss  stride=%ss  gravity_align=%s  classes=%s",
+                        t_hz, t_window_s, t_stride_s, t_ga, t_classes)
+        else:
+            logger.info("  训练参数 : 未找到 %s，跳过参数校验", json_path.name)
+
+        logger.info("  推理参数 : fs=%dHz  window=%ss  stride=%ss  gravity_align=True  conf_threshold=%.2f",
+                    self._fs, settings.window_seconds, infer_stride_s, self._conf_threshold)
+
+        # 参数一致性校验
+        warns = []
+        if t_hz and t_hz != self._fs:
+            warns.append(f"采样率不一致  训练={t_hz}Hz  推理={self._fs}Hz  → 建议设置 IMU_SAMPLE_RATE={t_hz}")
+        if t_window_s and abs(t_window_s - settings.window_seconds) > 0.01:
+            warns.append(f"窗口长度不一致  训练={t_window_s}s  推理={settings.window_seconds}s  → 建议设置 WINDOW_SECONDS={t_window_s}")
+        if t_stride_s and abs(t_stride_s - infer_stride_s) > 0.01:
+            warns.append(f"步长不一致  训练={t_stride_s}s  推理={infer_stride_s}s")
+        if t_ga is not None and not bool(t_ga):
+            warns.append("训练时未开启重力对齐，但推理已开启  → 重新训练时建议加上重力对齐")
+
+        if warns:
+            for w in warns:
+                logger.warning("  ⚠️  %s", w)
+        else:
+            logger.info("  参数校验 : ✓ 训练与推理参数一致")
+        logger.info("=" * 55)
 
     def predict(
         self,
