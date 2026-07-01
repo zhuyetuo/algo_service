@@ -217,7 +217,7 @@ async def _write_behavior(clf, device_id: int, day_ts: int,
          for r in day_rows_sorted],
         dtype=np.float32,
     )
-    events = clf.predict(data, base_ts_ms)
+    events = clf.predict(data, base_ts_ms, device_id=device_id)
 
     tz = user_timezone or "UTC"
     async with AsyncSessionLocal() as db:

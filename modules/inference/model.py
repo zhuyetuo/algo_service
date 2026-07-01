@@ -236,6 +236,7 @@ class BehaviorClassifier:
         self,
         data: np.ndarray,
         base_ts_ms: int,
+        device_id: int | None = None,
     ) -> list[dict]:
         """
         data       : (N, 6) float32，按时间顺序排列的 IMU 采样数据
@@ -274,6 +275,7 @@ class BehaviorClassifier:
         if settings.verbose_inference:
             pc_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             step_ms = self._step * 1000 // self._fs
+            dev_tag = f"设备{device_id} " if device_id is not None else ""
             for i, (lbl, conf) in enumerate(zip(labels, confidences)):
                 win_ts_ms = base_ts_ms + i * step_ms
                 chip_time = datetime.fromtimestamp(
@@ -281,8 +283,8 @@ class BehaviorClassifier:
                 ).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
                 label_zh = _LABEL_ZH.get(int(lbl), "未知")
                 _logger.info(
-                    "[PC %s | 片上 %s]  ML=%s(%d%%)",
-                    pc_now, chip_time, label_zh, int(conf * 100),
+                    "[PC %s | 片上 %s]  %sML=%s(%d%%)",
+                    pc_now, chip_time, dev_tag, label_zh, int(conf * 100),
                 )
 
         return windows_to_events(
