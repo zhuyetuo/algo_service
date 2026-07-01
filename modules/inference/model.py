@@ -1,3 +1,5 @@
+import logging
+from datetime import datetime, timezone as dt_tz
 from enum import IntEnum
 from pathlib import Path
 
@@ -6,6 +8,8 @@ import numpy as np
 from scipy import stats, signal
 
 from config import settings
+
+_logger = logging.getLogger(__name__)
 
 
 class BehaviorLabel(IntEnum):
@@ -21,6 +25,13 @@ _LABEL_MAP: dict[int, int] = {
     0: BehaviorLabel.SCRATCH,
     1: BehaviorLabel.MOVEMENT,
     2: BehaviorLabel.SLEEP,
+}
+
+_LABEL_ZH: dict[int, str] = {
+    int(BehaviorLabel.UNKNOWN):  "未知",
+    int(BehaviorLabel.MOVEMENT): "活动",
+    int(BehaviorLabel.SLEEP):    "睡觉",
+    int(BehaviorLabel.SCRATCH):  "抓挠",
 }
 
 
@@ -258,6 +269,21 @@ class BehaviorClassifier:
 
         # 滑动多数票平滑（k=5，±2帧），消除单窗口随机噪声翻转
         labels = _majority_smooth(labels, k=5)
+
+        # 逐窗口详细日志（需 VERBOSE_INFERENCE=true 开启）
+        if settings.verbose_inference:
+            pc_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            step_ms = self._step * 1000 // self._fs
+            for i, (lbl, conf) in enumerate(zip(labels, confidences)):
+                win_ts_ms = base_ts_ms + i * step_ms
+                chip_time = datetime.fromtimestamp(
+                    win_ts_ms / 1000, tz=dt_tz.utc
+                ).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                label_zh = _LABEL_ZH.get(int(lbl), "未知")
+                _logger.info(
+                    "[PC %s | 片上 %s]  ML=%s(%d%%)",
+                    pc_now, chip_time, label_zh, int(conf * 100),
+                )
 
         return windows_to_events(
             labels, confidences, self._win, self._step, self._fs, base_ts_ms
