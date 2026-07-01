@@ -496,9 +496,14 @@ async def run_inference_cycle() -> None:
         logger.warning("未找到模型文件 — 跳过本次推理周期")
         return
 
+    infer_stride_s = round(clf._step / clf._fs, 3)
     logger.info(
-        "使用模型 type={} fs={}Hz window={}s",
-        type(clf._model).__name__, clf._fs, settings.window_seconds,
+        "推理周期开始 | 模型={} fs={}Hz window={}s stride={}s fetch_interval={}s",
+        type(clf._model).__name__,
+        clf._fs,
+        settings.window_seconds,
+        infer_stride_s,
+        settings.fetch_interval_sec,
     )
 
     now_ms = int(time.time() * 1000)
