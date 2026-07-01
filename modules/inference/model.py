@@ -260,14 +260,19 @@ class BehaviorClassifier:
 
         # 参数一致性校验
         warns = []
+        _fix_hint = "修改 docker-compose.yml 中对应环境变量后执行 docker compose down && docker compose up -d 生效"
         if t_hz and t_hz != self._fs:
-            warns.append(f"采样率不一致  训练={t_hz}Hz  推理={self._fs}Hz  → 建议设置 IMU_SAMPLE_RATE={t_hz}")
+            warns.append(f"采样率不一致  训练={t_hz}Hz  推理={self._fs}Hz\n"
+                         f"       → 在 docker-compose.yml 将 IMU_SAMPLE_RATE 改为 {t_hz}，{_fix_hint}")
         if t_window_s and abs(t_window_s - settings.window_seconds) > 0.01:
-            warns.append(f"窗口长度不一致  训练={t_window_s}s  推理={settings.window_seconds}s  → 建议设置 WINDOW_SECONDS={t_window_s}")
+            warns.append(f"窗口长度不一致  训练={t_window_s}s  推理={settings.window_seconds}s\n"
+                         f"       → 在 docker-compose.yml 将 WINDOW_SECONDS 改为 {t_window_s}，{_fix_hint}")
         if t_stride_s and abs(t_stride_s - infer_stride_s) > 0.01:
-            warns.append(f"步长不一致  训练={t_stride_s}s  推理={infer_stride_s}s")
+            warns.append(f"步长不一致  训练={t_stride_s}s  推理={infer_stride_s}s\n"
+                         f"       → 在 docker-compose.yml 将 WINDOW_OVERLAP 调整使步长={t_stride_s}s，{_fix_hint}")
         if t_ga is not None and not bool(t_ga):
-            warns.append("训练时未开启重力对齐，但推理已开启  → 重新训练时建议加上重力对齐")
+            warns.append("训练时未开启重力对齐，但推理已开启\n"
+                         "       → 重新训练时建议加上重力对齐，或联系模型维护者")
 
         if warns:
             for w in warns:
