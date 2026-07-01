@@ -92,6 +92,13 @@ docker exec local-mysql8 mysql -h 192.168.33.253 -u root -pHicc-mysql-2026 \
   -e "SELECT bind_id, local_date, sleep_min, move_min, scratch_count, sleep_status, move_status, scratch_status FROM pet_dog_daily_summary.d_70 ORDER BY stat_date_ts DESC LIMIT 10;" 2>/dev/null
 ```
 
+**一键清空 MySQL 数据（调试用）：**
+
+```bash
+# 删除所有分表 + 同步断点，重启服务后自动重建
+bash scripts/reset_db.sh
+```
+
 > **bind_id 说明**：一台设备可先后绑定不同宠物（如原主人的狗去世后更换新狗）。所有数据表均包含 `bind_id` 字段，对应 `hiccpet_petos.device_bind_history.bind_id`，可按绑定期过滤历史数据，避免不同宠物的数据混淆。
 
 ---
