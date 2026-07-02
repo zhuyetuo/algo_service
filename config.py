@@ -30,8 +30,8 @@ class Settings(BaseSettings):
     model_path: str = "weights/ml_rf.pkl"
 
     # IMU 采样率（Hz）— 设备实际上报采样率，与 imu_train 训练时 --hz 参数一致
-    # 历史值: 50; 当前设备固件上报 20Hz
-    imu_sample_rate: int = 20
+    # 历史值: 50→20; 当前设备固件上报 25Hz，模型也以 25Hz 训练
+    imu_sample_rate: int = 25
 
     # 分类滑动窗口配置（与 imu_train configs/data.yaml 保持一致）
     # window_seconds=2.0, stride=1.0s → overlap=0.5
