@@ -9,22 +9,36 @@
 **前置条件**：MySQL 和 TDengine 均使用远端服务器（192.168.33.253）。
 
 ```bash
-# 1. 拉取代码
+# 1. 拉取代码（含模型文件 weights/ml_rf.pkl，无需单独训练）
 git clone <repo> && cd algo_service
 
-# 2. 配置（按实际环境修改 .env）
+# 2. 配置（按实际环境修改 .env，默认指向 192.168.33.253）
 cp .env.example .env
 
-# 3. 训练模型（首次运行约 20-25 秒，生成 weights/behavior_lgbm.pkl）
-python train/train.py
-
-# 4. 启动服务
+# 3. 启动服务（首次自动构建镜像，约 1-2 分钟）
 docker compose up -d --build
 
-# 5. 确认两个数据库连接正常
+# 4. 确认两个数据库连接正常
 curl http://localhost:8000/health
 # 期望返回：{"status":"ok","mysql":"ok","tdengine":"ok"}
 ```
+
+> `docker compose up -d --build` 会检测本地是否已有镜像；若不存在或 Dockerfile/依赖有变化则自动重新构建，构建完成后启动容器。适用于单机部署或开发环境。
+
+**K8s 部署（生产环境）：**
+
+K8s 不使用 docker compose，需先将镜像推送到私有镜像仓库：
+
+```bash
+# 构建并推送镜像（替换 <registry> 为实际仓库地址，如 registry.hiccpet.com）
+docker build -t <registry>/algo_service:v1.0 .
+docker push <registry>/algo_service:v1.0
+
+# K8s 通过 Deployment 拉取镜像，环境变量通过 ConfigMap / Secret 注入
+# 参考 docker-compose.yml 中的 environment 块配置对应的 K8s ConfigMap
+```
+
+K8s Deployment 中将 `image` 设为推送的镜像地址，并通过 `envFrom` 引用 ConfigMap / Secret 传入 `DB_HOST`、`TD_HOST`、`DB_PASSWORD` 等变量，与 docker-compose.yml 中的 `environment` 块一一对应。
 
 ```bash
 # 查看最新日志（实时）
@@ -124,14 +138,14 @@ bash scripts/reset_db.sh
 |------|------|
 | 语言 | Python 3.11+ |
 | 框架 | FastAPI + APScheduler |
-| 模型 | LightGBM（CPU，无 GPU 依赖） |
+| 模型 | RandomForest（scikit-learn，CPU，无 GPU 依赖） |
 | 时序数据库 | TDengine（taosrest HTTP 连接器，192.168.33.253:6041） |
 | 数据库 | MySQL（aiomysql + SQLAlchemy async，192.168.33.253:3306） |
 | 部署 | Docker Compose |
 
 核心功能：
 
-1. **行为识别**：每 15 秒（默认）从 TDengine 拉取最新 IMU 数据，滑动窗口分割后提取 78 维特征（与 imu_train 特征空间对齐），LightGBM 分类为 MOVEMENT(1) / SLEEP(2) / SCRATCH(3)，写入 `pet_dog_behavior.d_{device_id}` 表（含本地时间、用户时区、bind_id）。
+1. **行为识别**：每 15 秒（默认）从 TDengine 拉取最新 IMU 数据，重力轴对齐后按 2s/50% 重叠滑动窗口提取 78 维特征（与 imu_train 特征空间完全对齐），RandomForest 分类为 MOVEMENT(1) / SLEEP(2) / SCRATCH(3)，写入 `pet_dog_behavior.d_{device_id}` 表（含本地时间、用户时区、bind_id、behavior_label 中文标签）。
 2. **皮肤健康日评估**：每天凌晨 03:00 UTC 汇总抓挠次数，与个体基线对比计算 Z-score，三层阈值触发分级告警，写入评估表。
 3. **基线更新**：每天凌晨 02:00 UTC 用过去 30 天有效数据更新个体基线（EWMA + 软冻结），写入 `pet_dog_scratch_baseline.pet_skin_baseline` 表。
 4. **环境数据同步**：每个推理周期同步 TDengine `env_data` 的环境温湿度和体温，按本地日期聚合后写入 `pet_dog_environment.d_{device_id}` 表。
@@ -165,13 +179,11 @@ algo_service/
 │   └── jobs.py                  APScheduler 三个定时任务
 │
 ├── weights/
-│   └── ml_lgbm.pkl              imu_train 训练好的模型（joblib 格式，不纳入版本库）
+│   ├── ml_rf.pkl                RandomForest 模型（joblib，25Hz，window=2s，gravity_aligned）
+│   └── ml_rf.json               训练元数据（采样率、窗口参数、类别、精度）
 │
 ├── database_infra/              Git 子模块：数据库基础设施（DDL 等）
 ├── imu_train/                   Git 子模块：IMU 行为分类模型训练项目
-│
-├── train/
-│   └── train.py                 旧版模型训练脚本（已由 imu_train 子模块替代）
 │
 └── tests/
     └── unit/                    单元测试（无需真实数据库，88 个测试）
@@ -184,12 +196,14 @@ algo_service/
 ### 1. 行为识别（推理模块）
 
 ```
-TDengine imu_data (accel_x/y/z, gyro_x/y/z, 50 Hz)
-  └─ 滑动窗口分割 (3 s / 50% 重叠 → 每窗口 150 样本)
-       └─ 特征提取 (78 维 = 6 轴 × 13 维：9 时域 + 4 Welch PSD 频域)
-            └─ LightGBM 分类 → MOVEMENT(1) / SLEEP(2) / SCRATCH(3)
-                 └─ 合并连续同标签窗口 → 行为事件 (start_time, end_time, confidence)
-                      └─ 写入 pet_dog_behavior.d_{device_id}（含 local_start、user_timezone、bind_id）
+TDengine imu_data (accel_x/y/z, gyro_x/y/z, 25 Hz)
+  └─ 重力轴对齐（每窗口旋转至重力→+Z 标准坐标系，与 imu_train 训练预处理一致）
+       └─ 滑动窗口分割 (2 s / 50% 重叠 / 步长 1 s → 每窗口 50 样本)
+            └─ 特征提取 (78 维 = 6 轴 × 13 维：9 时域 + 4 Welch PSD 频域)
+                 └─ RandomForest 分类 → MOVEMENT(1) / SLEEP(2) / SCRATCH(3)
+                      └─ 多数票平滑（±2 帧滑动窗口，消除单窗口随机噪声翻转）
+                           └─ 合并连续同标签窗口 → 行为事件 (start_time, end_time, confidence)
+                                └─ 写入 pet_dog_behavior.d_{device_id}（含 local_start、user_timezone、bind_id、behavior_label）
 ```
 
 ### 2. 日评估（评估模块）
@@ -246,35 +260,41 @@ TDengine imu_data (accel_x/y/z, gyro_x/y/z, 50 Hz)
 | `TD_HOST` | `192.168.33.253` | TDengine 地址 |
 | `TD_DATABASE` | `hiccpet_device` | TDengine 数据库名 |
 | `FETCH_INTERVAL_SEC` | `15` | 推理周期间隔（秒） |
+| `IMU_SAMPLE_RATE` | `25` | IMU 采样率（Hz），须与模型训练参数一致 |
+| `WINDOW_SECONDS` | `2.0` | 滑动窗口长度（秒） |
+| `WINDOW_OVERLAP` | `0.5` | 窗口重叠比例（0.5 = 步长为窗口一半） |
+| `CONFIDENCE_THRESHOLD` | `0.0` | 置信度阈值，低于此值标记为 UNKNOWN（0.0 = 禁用） |
+| `VERBOSE_INFERENCE` | `false` | 开启后每个推理窗口输出一行详细日志（含片上时间、置信度） |
 | `LOG_LEVEL` | `info` | 日志级别 |
 
-详见 [docs/configuration.md](docs/configuration.md)。
+修改环境变量后执行 `docker compose down && docker compose up -d` 生效（无需重新 `--build`）。
 
 ---
 
 ## 模型训练
 
-模型由 `imu_train` 子模块训练，使用 LightGBM，输出 `ml_lgbm.pkl`（joblib 格式）。
+模型由 `imu_train` 子模块训练，使用 RandomForest，输出 `ml_rf.pkl`（joblib 格式）。**`weights/ml_rf.pkl` 和 `weights/ml_rf.json` 已随代码库提交，服务启动时直接加载，无需手动训练。**
+
+若需重新训练（例如更换训练数据或调整超参），在 `imu_train` 目录下完成训练后：
 
 ```bash
-# 初始化子模块（首次克隆后执行）
-git submodule update --init --recursive
+# 将新模型文件覆盖到 weights/
+cp imu_train/output/ml_rf.pkl weights/
+cp imu_train/output/ml_rf.json weights/
 
-# 训练（在 imu_train 目录下执行，详见子模块 README）
-cd imu_train && python train.py
-
-# 将训练好的模型复制到 weights/
-cp imu_train/output/ml_lgbm.pkl weights/
+# 重启服务（无需重新构建镜像）
+docker compose restart
 ```
 
-模型文件 `weights/ml_lgbm.pkl` 不纳入版本库，需训练后手动放入。
+服务启动时会自动读取 `weights/ml_rf.json` 中的训练参数（采样率、窗口长度、步长、是否重力对齐），并与当前推理参数对比，不一致时打印警告及修复建议。
 
-**部署时更新模型：**
+**K8s 环境更新模型：**
 
 ```bash
-# 将新模型文件复制到容器内
-docker cp weights/ml_lgbm.pkl algo_service:/app/weights/ml_lgbm.pkl
-docker restart algo_service
+# 将新模型文件复制到正在运行的 Pod 内（pod-name 替换为实际 Pod 名）
+kubectl cp weights/ml_rf.pkl <namespace>/<pod-name>:/app/weights/ml_rf.pkl
+kubectl cp weights/ml_rf.json <namespace>/<pod-name>:/app/weights/ml_rf.json
+kubectl rollout restart deployment/algo-service -n <namespace>
 ```
 
 ---
