@@ -64,8 +64,8 @@ docker compose down
 
 | 系统 | 地址 | 用途 |
 |------|------|------|
-| MySQL | 192.168.33.253:3306 | algo 服务自身数据库（行为事件、评估结果、基线、同步断点） |
-| MySQL | 192.168.33.253:3306 | 业务库 `hiccpet_petos`（设备绑定、用户时区） |
+| MySQL | 192.168.33.253:30100 | algo 服务自身数据库（行为事件、评估结果、基线、同步断点） |
+| MySQL | 192.168.33.253:30100 | 业务库 `hiccpet_petos`（设备绑定、用户时区） |
 | TDengine | 192.168.33.253:6041 | 时序原始数据（IMU、环境、体温） |
 
 **TDengine 超级表结构：**
@@ -94,19 +94,19 @@ curl -s -u root:taosdata \
 
 ```bash
 # 同步断点（含 bind_id）
-docker exec local-mysql8 mysql -h 192.168.33.253 -u root -pHicc-mysql-2026 \
+docker exec local-mysql8 mysql -h 192.168.33.253 -P 30100 -u root -pHicc-pet-mysql-2026 \
   -e "SELECT device_id, device_sn, bind_id, user_timezone, last_processed_ts, last_env_ts FROM algo.device_sync_state;" 2>/dev/null
 
 # 行为事件（设备 70）
-docker exec local-mysql8 mysql -h 192.168.33.253 -u root -pHicc-mysql-2026 \
+docker exec local-mysql8 mysql -h 192.168.33.253 -P 30100 -u root -pHicc-pet-mysql-2026 \
   -e "SELECT bind_id, behavior, duration_sec, local_start, local_end FROM pet_dog_behavior.d_70 ORDER BY ts_start DESC LIMIT 10;" 2>/dev/null
 
 # 环境数据（设备 70）
-docker exec local-mysql8 mysql -h 192.168.33.253 -u root -pHicc-mysql-2026 \
+docker exec local-mysql8 mysql -h 192.168.33.253 -P 30100 -u root -pHicc-pet-mysql-2026 \
   -e "SELECT bind_id, local_date, env_temp, env_humidity, neck_temp FROM pet_dog_environment.d_70;" 2>/dev/null
 
 # 每日行为汇总（设备 70）
-docker exec local-mysql8 mysql -h 192.168.33.253 -u root -pHicc-mysql-2026 \
+docker exec local-mysql8 mysql -h 192.168.33.253 -P 30100 -u root -pHicc-pet-mysql-2026 \
   -e "SELECT bind_id, local_date, sleep_min, move_min, scratch_count, sleep_status, move_status, scratch_status FROM pet_dog_daily_summary.d_70 ORDER BY stat_date_ts DESC LIMIT 10;" 2>/dev/null
 ```
 
@@ -140,7 +140,7 @@ bash scripts/reset_db.sh
 | 框架 | FastAPI + APScheduler |
 | 模型 | RandomForest（scikit-learn，CPU，无 GPU 依赖） |
 | 时序数据库 | TDengine（taosrest HTTP 连接器，192.168.33.253:6041） |
-| 数据库 | MySQL（aiomysql + SQLAlchemy async，192.168.33.253:3306） |
+| 数据库 | MySQL（aiomysql + SQLAlchemy async，192.168.33.253:30100） |
 | 部署 | Docker Compose |
 
 核心功能：
@@ -168,7 +168,7 @@ algo_service/
 │
 ├── modules/
 │   ├── inference/
-│   │   ├── model.py             特征提取（78 维）、滑动窗口、LightGBM 推理
+│   │   ├── model.py             重力对齐、滑动窗口、特征提取（78 维）、RandomForest 推理
 │   │   └── handler.py           POST /api/v1/inference/predict 端点
 │   ├── assessment/
 │   │   └── evaluator.py         日评估引擎、GET /api/v1/assessment/report/{device_id}
@@ -253,7 +253,7 @@ TDengine imu_data (accel_x/y/z, gyro_x/y/z, 25 Hz)
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `DB_HOST` | `192.168.33.253` | MySQL 地址 |
-| `DB_PORT` | `3306` | MySQL 端口 |
+| `DB_PORT` | `30100` | MySQL 端口 |
 | `DB_NAME` | `algo` | algo 服务自身数据库名 |
 | `DB_USER` / `DB_PASSWORD` | — | MySQL 认证 |
 | `BIZ_SCHEMA` | `hiccpet_petos` | 业务库（设备绑定来源） |

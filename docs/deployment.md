@@ -5,42 +5,32 @@
 | 依赖 | 说明 |
 |------|------|
 | Docker + Docker Compose | 运行容器 |
-| PostgreSQL 16 | 由后端 compose 维护，端口 5432 |
-| TDengine 3.x | 由后端 compose 维护，REST 端口 6041 |
-| 模型文件 | `weights/behavior_lgbm.pkl`，首次部署前需训练生成 |
+| MySQL 8 | 远端服务器 192.168.33.253:30100 |
+| TDengine 3.x | 远端服务器 192.168.33.253，REST 端口 6041 |
+| 模型文件 | `weights/ml_rf.pkl` + `weights/ml_rf.json`，已随代码库提交，无需训练 |
 
 ---
 
 ## 首次部署
 
-### 1. 训练模型
-
-在宿主机上执行（需先安装依赖）：
-
-```bash
-pip install -r requirements.txt
-python tests/test_1_inference.py
-```
-
-首次运行约 20–25 秒，生成 `weights/behavior_lgbm.pkl`。  
-该文件通过 Docker volume `model_weights` 挂载进容器，重新 build 不会丢失。
-
-### 2. 配置环境变量
+### 1. 配置环境变量
 
 ```bash
 cp .env.example .env
 ```
 
-默认值已对齐本地环境（host.docker.internal + pet_collar 数据库），通常无需修改。  
+默认值已对齐远端环境（192.168.33.253:30100），通常无需修改。  
 如需覆盖，编辑 `.env` 文件中对应的变量。
 
-### 3. 启动服务
+### 2. 启动服务
 
 ```bash
 docker compose up -d --build
 ```
 
-### 4. 验证连接
+首次执行会自动构建镜像（约 1–2 分钟），之后启动容器。
+
+### 3. 验证连接
 
 ```bash
 curl http://localhost:8000/health
@@ -49,7 +39,7 @@ curl http://localhost:8000/health
 返回示例：
 
 ```json
-{"status": "ok", "postgres": "ok", "tdengine": "ok"}
+{"status": "ok", "mysql": "ok", "tdengine": "ok"}
 ```
 
 如果某个连接失败，对应字段会显示错误信息，`status` 变为 `"degraded"`。
@@ -122,10 +112,10 @@ docker compose down -v --rmi local
 ## 常见问题
 
 **服务启动后立即退出**  
-→ 数据库连接失败。检查 `DB_HOST` 是否正确，确认 PostgreSQL 容器已启动。
+→ 数据库连接失败。检查 `DB_HOST` / `DB_PORT` 是否正确，确认远端 MySQL (192.168.33.253:30100) 可达。
 
 **health 返回 tdengine degraded**  
 → TDengine REST API 不可达。确认 TDengine 容器已启动，端口 6041 已暴露。
 
 **推理周期没有日志输出**  
-→ TDengine 中暂无设备数据，或模型文件不存在。确认 `weights/behavior_lgbm.pkl` 已挂载。
+→ TDengine 中暂无设备数据，或模型文件不存在。确认 `weights/ml_rf.pkl` 存在于容器内 `/app/weights/`。

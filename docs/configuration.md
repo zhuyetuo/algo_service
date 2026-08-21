@@ -10,15 +10,15 @@ cp .env.example .env
 
 ---
 
-## PostgreSQL
+## MySQL
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `DB_HOST` | `postgres` | 主机地址，同服务器部署填 `host.docker.internal` |
-| `DB_PORT` | `5432` | 端口 |
+| `DB_HOST` | `192.168.33.253` | 主机地址，同服务器部署填 `host.docker.internal` |
+| `DB_PORT` | `30100` | 端口 |
 | `DB_NAME` | `algo` | 数据库名 |
-| `DB_USER` | `algo` | 用户名 |
-| `DB_PASSWORD` | `algo` | 密码 |
+| `DB_USER` | `root` | 用户名 |
+| `DB_PASSWORD` | `Hicc-pet-mysql-2026` | 密码 |
 
 Schema 名称（通常无需修改）：
 

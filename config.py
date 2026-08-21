@@ -9,11 +9,11 @@ class Settings(BaseSettings):
     )
 
     # 数据库连接配置
-    db_host: str = "mysql"
-    db_port: int = 3306
+    db_host: str = "192.168.33.253"
+    db_port: int = 30100
     db_name: str = "algo"
-    db_user: str = "algo"
-    db_password: str = "algo"
+    db_user: str = "root"
+    db_password: str = "Hicc-pet-mysql-2026"
 
     @property
     def db_dsn(self) -> str:

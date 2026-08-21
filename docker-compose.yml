@@ -11,10 +11,10 @@ services:
       - "8000:8000"
     environment:
       - DB_HOST=${DB_HOST:-192.168.33.253}
-      - DB_PORT=${DB_PORT:-3306}
+      - DB_PORT=${DB_PORT:-30100}
       - DB_NAME=${DB_NAME:-algo}
       - DB_USER=${DB_USER:-root}
-      - DB_PASSWORD=${DB_PASSWORD:-Hicc-mysql-2026}
+      - DB_PASSWORD=${DB_PASSWORD:-Hicc-pet-mysql-2026}
       - BIZ_SCHEMA=${BIZ_SCHEMA:-hiccpet_petos}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - IMU_SAMPLE_RATE=${IMU_SAMPLE_RATE:-25}
