@@ -265,25 +265,37 @@ docker exec algo_service python backfill/import_infer.py \
 
 ---
 
-# 关于时区（CST）
+# 关于时区
 
-**离线数据是 Asia/Shanghai，线上 `user.timezone` 存的是 "CST" —— 这两个是同一个时区**
-（中国标准时间 UTC+8），绝对时间不需要任何换算。
+## `--tz` 参数：解析 imu_train 输出文件里的时间戳
+
+`--input` 指向的 `*_infer.json` / CSV 里，`ts` / `start_ts` / `end_ts` 是**不带时区的
+本地时间字符串**（录制机器在中国、拍的是北京时间），所以 `--tz` 默认
+`Asia/Shanghai` 是对的，不用改，跟下面的 "CST" 问题无关——那是另一件事。
+
+## `user.timezone` 里的 "CST"：不是中国标准时间
 
 行为表的 `ts_start` / `ts_end` 存的是 **UTC 毫秒**，本身与时区无关；时区只影响两件事：
-解析不带偏移的时间字符串，以及 `local_start` / `local_end` / `user_timezone` 这几列怎么写。
+`import_infer.py --tz` 解析不带偏移的输入时间戳，以及落库时 `local_start` /
+`local_end` / `user_timezone` 这几列怎么写。
 
-但 `"CST"` **不是合法的 IANA 时区名**，`ZoneInfo("CST")` 会直接抛异常。
-原来 `jobs.py` 是 `except Exception: 退回 UTC` 静默吞掉的，后果是：
+`"CST"` **不是合法的 IANA 时区名**，`ZoneInfo("CST")` 会直接抛异常。原来 `jobs.py`
+是 `except Exception: 退回 UTC` 静默吞掉的，后果是 `local_start`/`local_end` 偏移、
+日聚合边界错位，连带污染每日汇总和皮肤评估——这个已经修了，见下面。
 
-- `local_start` / `local_end` 比真实本地时间**差 8 小时**
-- 日聚合按 UTC 零点而不是北京零点分界，**每日汇总和皮肤评估的当天范围整体错 8 小时**
+`CST` 全球有歧义（中国 UTC+8 / 美国中部 UTC-6）。**查生产库发现 `user.timezone`
+里 21 个用户填的是 `"CST"`，同一张表里还有真实的 `America/New_York`、
+`America/Los_Angeles`、`EDT` 用户**——这批 "CST" 大概率也是美国用户填的
+（多半是把 Central 相关缩写和东部时间搞混，或客户端默认值填错），
+**经业务确认，本项目现在把 `"CST"` 解释为美国东部时间**（`America/New_York`），
+而不是字面上的中国标准时间。由 `CST_TIMEZONE` 环境变量控制，
+如果之后确认某批用户其实是中国用户，改成 `Asia/Shanghai` 即可。
 
-现在统一走 `timezones.resolve()`：`CST` / `PRC` / `Asia/Beijing` / `+08:00` / `UTC+8`
-这些写法都会被归一到 `Asia/Shanghai`，落库时 `user_timezone` 也写归一后的名字，
-下游不用再猜。识别不了的名字会打一次警告（而不是静默退回）。
+`timezones.resolve()` 统一处理这些写法：`CST`（→美国东部）、`EDT`/`EST`（→美国东部）、
+`PDT`/`PST`（→美国西部）、`PRC`/`Asia/Beijing`/`+08:00`/`UTC+8`（→中国）。落库时
+`user_timezone` 写归一后的 IANA 名，下游不用再猜。识别不了的名字打一次警告
+（而不是静默退回 UTC）。
 
-> `CST` 在全球有歧义（中国 UTC+8 / 美国中部 UTC-6）。本项目默认按中国标准时间解释，
-> 由 `CST_TIMEZONE` 环境变量控制，真要部署到美国改成 `America/Chicago` 即可。
-
-所以导入时 `--tz Asia/Shanghai`（默认值）就是对的，不需要额外做换算。
+> `import_infer.py` 走 `enrich_from_db()` 从业务库补时区时，如果对应用户
+> `timezone` 字段恰好是 `"CST"`，现在会按美国东部时间落库，而不是中国时区。
+> 映射表里显式填了 `timezone` 列的设备不受影响，只用业务库兜底的才会走这条路径。

@@ -17,8 +17,11 @@
 关于 CST 的歧义
 ---------------
 "CST" 在全球范围是有歧义的：中国标准时间(UTC+8)、美国中部时间(UTC-6/-5)、
-古巴时间(UTC-5)。本项目是国内宠物产品，默认按**中国标准时间**解释，
-可通过 `CST_TIMEZONE` 环境变量改（比如真要部署到美国就改成 America/Chicago）。
+古巴时间(UTC-5)。生产库 user.timezone 里除了 21 个 "CST" 外，还有真实的
+America/New_York / America/Los_Angeles / EDT 用户，说明这批 "CST" 大概率
+也是美国用户填的（很可能是把 "Central" 相关缩写和东部时间搞混，或客户端
+默认值填错），经业务确认后本项目按**美国东部时间**解释，
+可通过 `CST_TIMEZONE` 环境变量改（比如确认是中国用户就改成 Asia/Shanghai）。
 """
 
 import logging
@@ -59,12 +62,12 @@ _OFFSET_RE = re.compile(
 
 
 def _cst_default() -> str:
-    """CST 的含义可配置，默认中国标准时间。"""
+    """CST 的含义可配置，经业务确认默认按美国东部时间解释。"""
     try:
         from config import settings
-        return getattr(settings, "cst_timezone", None) or "Asia/Shanghai"
+        return getattr(settings, "cst_timezone", None) or "America/New_York"
     except Exception:
-        return "Asia/Shanghai"
+        return "America/New_York"
 
 
 def resolve(tz_name: str | None, default: str = "UTC"):

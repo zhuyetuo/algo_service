@@ -183,10 +183,14 @@ class TestTimezoneResolve:
     def _off(self, name):
         return datetime(2026, 8, 19, 12, tzinfo=resolve(name)).utcoffset().total_seconds() / 3600
 
-    def test_cst_is_china_by_default(self):
-        """ZoneInfo('CST') 会直接抛异常，必须走别名表，否则静默退回 UTC 差 8 小时。"""
-        assert self._off("CST") == 8
-        assert canonical_name("CST") == "Asia/Shanghai"
+    def test_cst_defaults_to_us_eastern(self):
+        """ZoneInfo('CST') 会直接抛异常，必须走别名表，否则静默退回 UTC。
+
+        生产库里 "CST" 用户与真实的 America/New_York 用户同批出现，
+        经业务确认按美国东部时间解释（而不是字面上的中国标准时间）。
+        """
+        assert self._off("CST") == -4   # 8 月是 EDT
+        assert canonical_name("CST") == "America/New_York"
 
     def test_iana_passthrough(self):
         assert canonical_name("Asia/Shanghai") == "Asia/Shanghai"
@@ -216,21 +220,21 @@ class TestTimezoneResolve:
 
 
 class TestJobsTimezoneHandling:
-    def test_cst_local_str_matches_shanghai(self):
-        """修复前 'CST' 会退回 UTC，local_start 差 8 小时。"""
+    def test_cst_local_str_matches_us_eastern(self):
+        """修复前 'CST' 会退回 UTC；现在按业务确认的美国东部时间解释。"""
         from scheduler.jobs import _ts_to_local_str
-        ts = 1787104800000  # 2026-08-19 10:00 +08:00
-        assert _ts_to_local_str(ts, "CST") == _ts_to_local_str(ts, "Asia/Shanghai")
-        assert _ts_to_local_str(ts, "CST") == "2026-08-19 10:00:00"
+        ts = 1787104800000  # 2026-08-19 10:00 +08:00 == 2026-08-18 22:00 EDT
+        assert _ts_to_local_str(ts, "CST") == _ts_to_local_str(ts, "America/New_York")
+        assert _ts_to_local_str(ts, "CST") != _ts_to_local_str(ts, "UTC")
 
-    def test_cst_day_boundary_matches_shanghai(self):
-        """日聚合边界错 8 小时会直接污染每日汇总和皮肤评估。"""
+    def test_cst_day_boundary_matches_us_eastern(self):
+        """日聚合边界错位会直接污染每日汇总和皮肤评估。"""
         from scheduler.jobs import _day_start_utc_ms
         ts = 1787140800000  # 2026-08-19 20:00 +08:00
-        assert _day_start_utc_ms(ts, "CST") == _day_start_utc_ms(ts, "Asia/Shanghai")
+        assert _day_start_utc_ms(ts, "CST") == _day_start_utc_ms(ts, "America/New_York")
 
     def test_us_timezone_abbreviations(self):
-        """生产库真实数据里出现过 EDT，不是 China CST，必须映射到美国时区。"""
+        """生产库真实数据里出现过 EDT，必须映射到美国时区而不是静默退回 UTC。"""
         assert canonical_name("EDT") == "America/New_York"
         assert canonical_name("EST") == "America/New_York"
         assert canonical_name("PDT") == "America/Los_Angeles"

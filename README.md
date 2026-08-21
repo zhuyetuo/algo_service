@@ -373,7 +373,7 @@ IMU_DEVICE_GYRO_UNIT=rads
 | `IMU_MODEL_ACC_UNIT` | `ms2` | 模型训练时的加速度单位（`ml_rf.json` 有 `acc_unit` 时以它为准） |
 | `IMU_MODEL_GYRO_UNIT` | `dps` | 模型训练时的角速度单位（`ml_rf.json` 有 `gyro_unit` 时以它为准） |
 | `VERBOSE_INFERENCE` | `false` | 开启后每个推理窗口输出一行详细日志（含片上时间、置信度） |
-| `CST_TIMEZONE` | `Asia/Shanghai` | `"CST"` 按哪个时区解释（全球有歧义，本项目按中国标准时间） |
+| `CST_TIMEZONE` | `America/New_York` | `"CST"` 按哪个时区解释（全球有歧义；生产库里 "CST" 用户与真实美国用户同批出现，经业务确认按美国东部时间） |
 | `LOG_LEVEL` | `info` | 日志级别 |
 
 修改环境变量后执行 `docker compose down && docker compose up -d` 生效（无需重新 `--build`）。
