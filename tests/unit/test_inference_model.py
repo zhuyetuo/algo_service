@@ -218,3 +218,85 @@ class TestWindowsToEvents:
         starts = [e["start_time"] for e in events]
         assert all(starts[i] > starts[i - 1] for i in range(1, len(starts)))
         assert all(e["end_time"] > e["start_time"] for e in events)
+
+
+# ---------------------------------------------------------------------------
+# 量纲统一
+# ---------------------------------------------------------------------------
+
+from modules.inference import units as U
+
+
+class TestResolveScales:
+    def test_identity_when_units_match(self):
+        assert U.resolve_scales("ms2", "dps", "ms2", "dps") == (1.0, 1.0)
+
+    def test_rads_to_dps(self):
+        _, gyro = U.resolve_scales("ms2", "rads", "ms2", "dps")
+        assert gyro == pytest.approx(57.29577951, rel=1e-9)
+
+    def test_g_to_ms2(self):
+        acc, _ = U.resolve_scales("g", "dps", "ms2", "dps")
+        assert acc == pytest.approx(9.80665, rel=1e-9)
+
+    def test_ms2_to_g(self):
+        acc, _ = U.resolve_scales("ms2", "dps", "g", "dps")
+        assert acc == pytest.approx(1 / 9.80665, rel=1e-9)
+
+    def test_roundtrip_is_identity(self):
+        a1, g1 = U.resolve_scales("ms2", "rads", "g", "dps")
+        a2, g2 = U.resolve_scales("g", "dps", "ms2", "rads")
+        assert a1 * a2 == pytest.approx(1.0, rel=1e-9)
+        assert g1 * g2 == pytest.approx(1.0, rel=1e-9)
+
+    def test_unknown_unit_raises(self):
+        with pytest.raises(ValueError, match="加速度"):
+            U.resolve_scales("mps2", "dps", "ms2", "dps")
+        with pytest.raises(ValueError, match="角速度"):
+            U.resolve_scales("ms2", "degps", "ms2", "dps")
+
+    def test_case_insensitive(self):
+        assert U.resolve_scales("MS2", "DPS", "ms2", "dps") == (1.0, 1.0)
+
+
+class TestApplyScales:
+    def test_noop_returns_same_object(self):
+        d = np.ones((10, 6), dtype=np.float32)
+        assert U.apply_scales(d, 1.0, 1.0) is d
+
+    def test_scales_acc_and_gyro_separately(self):
+        d = np.ones((4, 6), dtype=np.float32)
+        out = U.apply_scales(d, 2.0, 3.0)
+        assert np.all(out[:, 0:3] == 2.0)
+        assert np.all(out[:, 3:6] == 3.0)
+
+    def test_does_not_mutate_input(self):
+        d = np.ones((4, 6), dtype=np.float32)
+        U.apply_scales(d, 2.0, 3.0)
+        assert np.all(d == 1.0)
+
+
+class TestDiagnose:
+    def _static(self, g_value):
+        d = np.zeros((100, 6), dtype=np.float32)
+        d[:, 2] = g_value
+        return d
+
+    def test_detects_ms2(self):
+        assert U.diagnose(self._static(9.8))["acc_unit_guess"] == "ms2"
+
+    def test_detects_g(self):
+        assert U.diagnose(self._static(1.0))["acc_unit_guess"] == "g"
+
+    def test_unknown_when_out_of_range(self):
+        r = U.diagnose(self._static(400.0))
+        assert r["acc_unit_guess"] is None
+        assert r["acc_confidence"] == "低"
+
+    def test_describe_flags_mismatch(self):
+        text = " ".join(U.describe(U.diagnose(self._static(1.0)), "ms2", "dps"))
+        assert "对不上" in text and "IMU_DEVICE_ACC_UNIT" in text
+
+    def test_describe_confirms_match(self):
+        text = " ".join(U.describe(U.diagnose(self._static(9.8)), "ms2", "dps"))
+        assert "✓" in text

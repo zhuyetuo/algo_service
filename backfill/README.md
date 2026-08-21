@@ -1,6 +1,61 @@
-# 离线回补工具
+# 离线工具
 
-设备端链路还没打通时，用这个工具把 **TDengine 里已有的历史 IMU 数据**跑一遍推理，
+设备端链路还没打通时用的两个工具：
+
+| 脚本 | 作用 |
+|------|------|
+| `diagnose_signal.py` | 核对设备上报的 IMU 单位是否与模型训练单位一致 |
+| `run_backfill.py` | 把历史 IMU 数据跑一遍推理，结果写进 MySQL 行为表 |
+
+**先跑 `diagnose_signal.py` 再跑回补** —— 单位不对的话回补出来的结果是错的，
+还得删库重来。
+
+---
+
+# 一、信号量级诊断 `diagnose_signal.py`
+
+imu_train 训练时**不做量纲统一**，训练 CSV 是什么单位模型就学什么量级。而特征里
+mean / std / rms / range / SMA / 模长 / jerk 全是**有量纲的绝对量**，
+单位差一个量级这些特征就整体平移出训练分布。
+
+> 频谱熵、能量占比、相关系数是无量纲的不受影响，所以单位错了通常不是"全错"，
+> 而是**置信度莫名偏低、某几类死活预测不出来**，比全错更难排查。
+
+```bash
+# 逐台设备看量级
+docker exec algo_service python backfill/diagnose_signal.py
+
+# 只看某台，或指定某天
+docker exec algo_service python backfill/diagnose_signal.py --device-sn EA:CB:3E:CF:00:11
+docker exec algo_service python backfill/diagnose_signal.py --device-sn EA:CB:3E:CF:00:11 --date 2026-08-19
+```
+
+判断依据是**静止时 `|acc|` 必然等于重力常数**：中位数 ≈9.8 就是 m/s²，≈1.0 就是 g，
+工具会直接给结论。角速度没有这种固定锚点，工具打印量级由你判断——
+犬只日常活动 deg/s 是几十~几百，换成 rad/s 则是零点几~几。
+
+确认后在 `docker-compose.yml` 或 `.env` 里设置：
+
+```bash
+IMU_DEVICE_ACC_UNIT=ms2     # ms2 | g
+IMU_DEVICE_GYRO_UNIT=rads   # dps | rads
+# docker compose down && docker compose up -d 生效
+```
+
+启动日志的「量纲统一」一行会打印最终生效的换算系数，可核对：
+
+```
+量纲统一 : 加速度 m/s²→m/s² (×1)   角速度 rad/s→deg/s (×57.2958)
+```
+
+新模型建议在 `ml_rf.json` 里写上 `acc_unit` / `gyro_unit`，服务会优先采用，
+不用再靠配置猜。
+
+---
+
+# 二、离线回补 `run_backfill.py`
+
+把 **TDengine 里已有的历史 IMU 数据**跑一遍推理，
 把行为识别结果写进 MySQL 行为表，先把"数据 → 算法 → 数据库"这条链路验证起来。
 
 跟线上调度器的区别：

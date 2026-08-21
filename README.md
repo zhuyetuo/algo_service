@@ -128,6 +128,7 @@ bash scripts/reset_db.sh
 - [算法流程](#算法流程)
 - [特征说明](#特征说明)
 - [离线回补（设备链路未打通时用）](#离线回补设备链路未打通时用)
+- [IMU 量纲统一](#imu-量纲统一)
 - [配置项说明](#配置项说明)
 - [测试与验证](#测试与验证)
 
@@ -171,6 +172,7 @@ algo_service/
 │   ├── inference/
 │   │   ├── features.py          特征提取（imu_train src/ml/features.py 的逐行移植）
 │   │   ├── gravity.py           重力轴对齐 + 原始姿态角（imu_train gravity_align.py 移植）
+│   │   ├── units.py             量纲统一：设备上报单位 → 模型训练单位
 │   │   ├── model.py             滑动窗口、特征布局自动识别、RandomForest 推理、事件合并
 │   │   └── handler.py           POST /api/v1/inference/predict 端点
 │   ├── assessment/
@@ -182,7 +184,8 @@ algo_service/
 │   └── jobs.py                  APScheduler 三个定时任务
 │
 ├── backfill/
-│   └── run_backfill.py          离线回补：历史 IMU 数据 → 推理 → 写库（见 backfill/README.md）
+│   ├── run_backfill.py          离线回补：历史 IMU 数据 → 推理 → 写库
+│   └── diagnose_signal.py       信号量级诊断：核对 IMU 单位是否与训练单位一致
 │
 ├── weights/
 │   ├── ml_rf.pkl                RandomForest 模型（joblib，25Hz，window=2s，gravity_aligned）
@@ -192,7 +195,7 @@ algo_service/
 ├── imu_train/                   Git 子模块：IMU 行为分类模型训练项目
 │
 └── tests/
-    └── unit/                    单元测试（无需真实数据库，104 个测试）
+    └── unit/                    单元测试（无需真实数据库，119 个测试）
 ```
 
 ---
@@ -203,13 +206,14 @@ algo_service/
 
 ```
 TDengine imu_data (accel_x/y/z, gyro_x/y/z, 25 Hz)
-  └─ 滑动窗口分割 (2 s / 50% 重叠 / 步长 1 s → 每窗口 50 样本)
-       └─ 原始 acc 算 pitch/roll → 重力轴对齐 → 姿态角拼到通道末尾（顺序与训练侧一致）
-            └─ 特征提取 (6通道171维 / 8通道193维，与 imu_train 完全一致)
-                 └─ RandomForest 分类 → MOVEMENT(1) / SLEEP(2) / SCRATCH(3)
-                      └─ 多数票平滑（±2 帧滑动窗口，消除单窗口随机噪声翻转）
-                           └─ 合并连续同标签窗口 → 行为事件 (start_time, end_time, confidence)
-                                └─ 写入 pet_dog_behavior.d_{device_id}（含 local_start、user_timezone、bind_id、behavior_label）
+  └─ 量纲统一（设备上报单位 → 模型训练单位，见「IMU 量纲统一」）
+       └─ 滑动窗口分割 (2 s / 50% 重叠 / 步长 1 s → 每窗口 50 样本)
+            └─ 原始 acc 算 pitch/roll → 重力轴对齐 → 姿态角拼到通道末尾（顺序与训练侧一致）
+                 └─ 特征提取 (6通道171维 / 8通道193维，与 imu_train 完全一致)
+                      └─ RandomForest 分类 → MOVEMENT(1) / SLEEP(2) / SCRATCH(3)
+                           └─ 多数票平滑（±2 帧，消除单窗口随机噪声翻转）
+                                └─ 合并连续同标签窗口 → 行为事件
+                                     └─ 写入 pet_dog_behavior.d_{device_id}
 ```
 
 ### 2. 日评估（评估模块）
@@ -291,6 +295,48 @@ docker exec algo_service python backfill/run_backfill.py --date 2026-08-19 --ass
 
 ---
 
+## IMU 量纲统一
+
+**imu_train 训练时不做量纲统一**（`loader_custom.py`：「单位不限（训练时不做量纲统一）」），
+训练 CSV 是什么单位，模型学到的就是什么量级。而特征里绝大多数是**有量纲的绝对量**——
+mean / std / min / max / range / rms / iqr、SMA、acc/gyro 模长、jerk——
+单位差一个量级，这些特征整体平移，直接落到训练分布之外。
+
+> 频谱熵、分频段能量占比、相关系数是无量纲的，不受影响。所以单位错了往往不是"全错"，
+> 而是**置信度莫名偏低、某几类死活预测不出来**，比全错更难查。
+
+已知的单位约定：
+
+| | 训练侧（imu_train） | 设备侧（TDengine） |
+|---|---|---|
+| 加速度 | `labelstudio_to_custom.py` 统一换算到 **m/s²** | m/s²（静止 \|acc\| ≈ 9.6~9.8） |
+| 角速度 | **原样透传不换算** → WitMotion 原始输出为 **deg/s** | 需实测确认（TF 固件文档为 rad/s） |
+
+**上线前务必用真实数据确认，不要照搬上表**（设备固件可能改过）：
+
+```bash
+docker exec algo_service python backfill/diagnose_signal.py --device-sn EA:CB:3E:CF:00:11
+```
+
+工具会打印 `|acc|` / `|gyro|` 的量级并给出判断——静止时 `|acc|` 必然等于重力常数，
+中位数 ≈9.8 就是 m/s²，≈1.0 就是 g。角速度没有这种固定锚点，按经验量级判断：
+犬只日常活动 deg/s 是几十~几百，换成 rad/s 则是零点几~几。
+
+确认后在 `docker-compose.yml` 或 `.env` 设置，例如角速度实际是 rad/s：
+
+```bash
+IMU_DEVICE_GYRO_UNIT=rads
+# docker compose down && docker compose up -d 生效
+```
+
+默认四个单位全部一致（换算系数 = 1.0，不改变原有行为）。启动日志的
+「量纲统一」一行会打印最终生效的换算系数，可核对。
+
+新模型建议在 `ml_rf.json` 里写上 `acc_unit` / `gyro_unit`，服务会优先采用，
+不用再靠配置猜；缺失时启动会打警告提醒。
+
+---
+
 ## 配置项说明
 
 主要环境变量（均可在 `.env` 或 `docker-compose.yml` 中覆盖）：
@@ -310,6 +356,10 @@ docker exec algo_service python backfill/run_backfill.py --date 2026-08-19 --ass
 | `WINDOW_OVERLAP` | `0.5` | 窗口重叠比例（0.5 = 步长为窗口一半） |
 | `CONFIDENCE_THRESHOLD` | `0.0` | 置信度阈值，低于此值标记为 UNKNOWN（0.0 = 禁用） |
 | `SMOOTH_WINDOW` | `5` | 逐窗口多数票平滑的窗口数（奇数，1 = 关闭） |
+| `IMU_DEVICE_ACC_UNIT` | `ms2` | 设备上报的加速度单位：`ms2`=m/s²，`g`=重力单位 |
+| `IMU_DEVICE_GYRO_UNIT` | `dps` | 设备上报的角速度单位：`dps`=deg/s，`rads`=rad/s |
+| `IMU_MODEL_ACC_UNIT` | `ms2` | 模型训练时的加速度单位（`ml_rf.json` 有 `acc_unit` 时以它为准） |
+| `IMU_MODEL_GYRO_UNIT` | `dps` | 模型训练时的角速度单位（`ml_rf.json` 有 `gyro_unit` 时以它为准） |
 | `VERBOSE_INFERENCE` | `false` | 开启后每个推理窗口输出一行详细日志（含片上时间、置信度） |
 | `LOG_LEVEL` | `info` | 日志级别 |
 
@@ -396,5 +446,5 @@ docker exec algo_service python tests/run_evaluation.py --fresh
 docker exec algo_service python -m pytest tests/unit/ -v
 ```
 
-104 个测试，覆盖：特征提取与维度、重力对齐、姿态角、滑动窗口、事件合并、标签平滑、
+119 个测试，覆盖：特征提取与维度、重力对齐、姿态角、量纲换算与单位诊断、滑动窗口、事件合并、标签平滑、
 评分函数、基线算法、TDengine 工具函数、`/health` 接口。

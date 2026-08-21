@@ -41,6 +41,19 @@ class Settings(BaseSettings):
     # 置信度阈值：低于此值的窗口标记为 UNKNOWN（0.0 = 禁用，直接输出模型预测）
     confidence_threshold: float = 0.0
 
+    # ── IMU 量纲统一 ────────────────────────────────────────────────────
+    # 设备上报单位（TDengine 里存的是什么单位）
+    #   加速度: ms2=m/s²  g=重力单位
+    #   角速度: dps=deg/s  rads=rad/s
+    # 模型训练单位优先从 ml_rf.json 的 acc_unit/gyro_unit 读，缺失时用下面的默认值。
+    # 默认全部一致（换算系数=1.0，不改变原有行为）；用
+    #   python backfill/diagnose_signal.py --device-sn <SN>
+    # 拿真实数据确认后再改。
+    imu_device_acc_unit:  str = "ms2"
+    imu_device_gyro_unit: str = "dps"
+    imu_model_acc_unit:   str = "ms2"
+    imu_model_gyro_unit:  str = "dps"
+
     # 逐窗口多数票平滑的窗口数（奇数，1 = 关闭平滑）
     smooth_window: int = 5
 

@@ -9,6 +9,7 @@ import numpy as np
 
 from config import settings
 from modules.inference import features as F
+from modules.inference import units as U
 from modules.inference.gravity import prepare_windows
 
 _logger = logging.getLogger(__name__)
@@ -152,6 +153,14 @@ class BehaviorClassifier:
         # 特征布局自动识别：拿模型的 n_features_in_ 反推该用哪套特征
         self._feature_mode, self._n_channels = self._detect_feature_layout()
 
+        # 量纲统一：模型训练单位优先取 ml_rf.json，缺失时回落到配置默认值
+        self._model_acc_unit  = meta.get("acc_unit")  or settings.imu_model_acc_unit
+        self._model_gyro_unit = meta.get("gyro_unit") or settings.imu_model_gyro_unit
+        self._acc_scale, self._gyro_scale = U.resolve_scales(
+            settings.imu_device_acc_unit, settings.imu_device_gyro_unit,
+            self._model_acc_unit, self._model_gyro_unit,
+        )
+
         self._log_startup(path, meta)
 
     # -- 初始化辅助 ---------------------------------------------------------
@@ -220,6 +229,11 @@ class BehaviorClassifier:
                      "conf_threshold=%.2f  smooth_k=%d",
                      self._fs, settings.window_seconds, infer_stride_s,
                      self._conf_threshold, self._smooth_k)
+        _logger.info("  量纲统一 : 加速度 %s→%s (×%.6g)   角速度 %s→%s (×%.6g)",
+                     U.ACC_UNIT_LABEL.get(settings.imu_device_acc_unit, "?"),
+                     U.ACC_UNIT_LABEL.get(self._model_acc_unit, "?"), self._acc_scale,
+                     U.GYRO_UNIT_LABEL.get(settings.imu_device_gyro_unit, "?"),
+                     U.GYRO_UNIT_LABEL.get(self._model_gyro_unit, "?"), self._gyro_scale)
 
         warns = []
         fix = "修改 docker-compose.yml 中对应环境变量后执行 docker compose down && docker compose up -d 生效"
@@ -238,6 +252,13 @@ class BehaviorClassifier:
         if self._feature_mode == "legacy":
             warns.append("当前模型使用旧版 78 维特征，与 imu_train 最新特征管线不一致\n"
                          "       → 用最新 imu_train 重新训练后替换 weights/ml_rf.pkl 与 ml_rf.json")
+        if not meta.get("acc_unit") and not meta.get("gyro_unit"):
+            warns.append(
+                f"模型未声明训练单位，按配置默认值处理"
+                f"（加速度={U.ACC_UNIT_LABEL.get(self._model_acc_unit, '?')}，"
+                f"角速度={U.GYRO_UNIT_LABEL.get(self._model_gyro_unit, '?')}）\n"
+                "       → 特征中大量是有量纲的绝对量，单位错一个量级会让置信度整体偏低\n"
+                "       → 跑 python backfill/diagnose_signal.py --device-sn <SN> 用真实数据核对")
 
         if warns:
             for w in warns:
@@ -263,6 +284,9 @@ class BehaviorClassifier:
         data: (N, 6) 原始 IMU 序列
         返回 (labels, confidences)，均为逐窗口结果，labels 已映射为 BehaviorLabel。
         """
+        # 量纲统一必须在分窗和重力对齐之前：特征里大量是有量纲的绝对量
+        data = U.apply_scales(data, self._acc_scale, self._gyro_scale)
+
         windows = segment(data, self._win, self._step)
         if not windows:
             return np.empty(0, dtype=int), np.empty(0)
