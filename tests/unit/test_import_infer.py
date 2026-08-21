@@ -7,6 +7,7 @@ import pytest
 
 from backfill.import_infer import (
     DeviceMap,
+    collect_inputs,
     merge_windows,
     parse_ts,
     read_csv_rows,
@@ -165,8 +166,9 @@ class TestReadCsvRows:
         assert rows[0]["end_ms"] - rows[0]["start_ms"] == 300_000
 
     def test_rejects_unknown_header(self, tmp_path):
+        """ValueError (不是 SystemExit)，让调用方能跳过单个坏文件继续处理其它文件。"""
         p = self._write(tmp_path, "foo,bar\n1,2\n")
-        with pytest.raises(SystemExit, match="表头无法识别"):
+        with pytest.raises(ValueError, match="表头无法识别"):
             read_csv_rows(p, SH)
 
 
@@ -239,3 +241,39 @@ class TestJobsTimezoneHandling:
         assert canonical_name("EST") == "America/New_York"
         assert canonical_name("PDT") == "America/Los_Angeles"
         assert canonical_name("PST") == "America/Los_Angeles"
+
+
+class TestCollectInputs:
+    def _make_tree(self, tmp_path):
+        (tmp_path / "_infer").mkdir()
+        (tmp_path / "_infer" / "a_infer.json").write_text("{}")
+        (tmp_path / "by_conf_max" / "clips_0.5-0.6").mkdir(parents=True)
+        (tmp_path / "by_conf_max" / "clips_0.5-0.6" / "clip_infer_result_majority.csv").write_text(
+            "acc_x,acc_y,acc_z,gyro_x,gyro_y,gyro_z,timestamp\n0,0,9.8,0,0,0,2026-08-19 08:00:00\n"
+        )
+        (tmp_path / "imu_daily_scratch_stats.csv").write_text("x\n1\n")
+        return tmp_path
+
+    def test_default_ignores_raw_clip_csvs(self, tmp_path):
+        """默认只找 *_infer.json，run_review_bins_all_days.sh 输出目录里的
+        复核用原始片段 CSV（acc_x/.../timestamp 表头，不是推理结果）不会被误收。"""
+        root = self._make_tree(tmp_path)
+        files = collect_inputs(str(root))
+        assert [f.name for f in files] == ["a_infer.json"]
+
+    def test_include_csv_pulls_in_csvs_too(self, tmp_path):
+        root = self._make_tree(tmp_path)
+        files = collect_inputs(str(root), include_csv=True)
+        names = {f.name for f in files}
+        assert "a_infer.json" in names
+        assert "clip_infer_result_majority.csv" in names
+
+    def test_excludes_daily_scratch_stats_even_with_include_csv(self, tmp_path):
+        root = self._make_tree(tmp_path)
+        files = collect_inputs(str(root), include_csv=True)
+        assert "imu_daily_scratch_stats.csv" not in {f.name for f in files}
+
+    def test_single_file_passthrough(self, tmp_path):
+        f = tmp_path / "x_infer.json"
+        f.write_text("{}")
+        assert collect_inputs(str(f)) == [f]

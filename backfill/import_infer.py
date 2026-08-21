@@ -4,16 +4,22 @@
 
 支持两种输入，按扩展名/表头自动识别：
 
-1. imu_train 原生产物 `*_infer.json`（推荐，零额外工作量）
+1. imu_train 原生产物 `*_infer.json`（推荐，零额外工作量，默认扫描的唯一目标）
    run_review_bins_all_days.sh 跑完后就在 RESULT_ROOT/{day}/ 下，
    里面的 windows 数组已经是逐窗口的 ts / label / conf。
 
-2. CSV，两种表头之一：
+2. CSV，两种表头之一（需要显式加 --include-csv 才会扫描）：
    窗口级：device_sn,ts,label,conf
    事件级：device_sn,start_ts,end_ts,label,conf
 
+   默认不扫描 *.csv 是因为 run_review_bins_all_days.sh 的输出目录里还混着
+   复核用的原始片段 CSV（by_conf_max/clips_*/ 下那些，表头是 acc_x/.../timestamp，
+   根本不是推理结果）、Nginx 媒体目录同步产物等，不加区分地扫全部 *.csv
+   会把这些也当成推理结果。
+
 窗口级输入会用与线上推理一致的规则合并成行为事件（连续同标签合并，
-跨数据空洞不合并），事件级输入原样导入。
+跨数据空洞不合并），事件级输入原样导入。单个文件解析失败只跳过该文件，
+不会中断整个批次。
 
 用法见 backfill/README.md。
 """
@@ -219,8 +225,8 @@ def read_csv_rows(path: Path, tz: ZoneInfo) -> tuple[str, list[dict]]:
         return "event", out
 
     if "ts" not in cols:
-        raise SystemExit(
-            f"{path} 表头无法识别，需要 ts（窗口级）或 start_ts/end_ts（事件级），"
+        raise ValueError(
+            f"表头无法识别，需要 ts（窗口级）或 start_ts/end_ts（事件级），"
             f"当前表头：{sorted(cols)}"
         )
     out = []
@@ -346,21 +352,32 @@ async def write_events(device_id: int, bind_id: int | None, tz_name: str,
 # 主流程
 # ---------------------------------------------------------------------------
 
-def collect_inputs(root: str) -> list[Path]:
+def collect_inputs(root: str, include_csv: bool = False) -> list[Path]:
+    """
+    默认只找 *_infer.json（imu_train 推理产物）。
+
+    run_review_bins_all_days.sh 的输出目录里还混着复核用的原始片段 CSV
+    （by_conf_max/clips_*/ 下那些，表头是 acc_x/.../timestamp，根本不是推理
+    结果）、Label Studio 任务文件等其它产物，不能不加区分地扫全部 *.csv——
+    传 include_csv=True 才会额外找 *.csv，用于手工整理好的窗口级/事件级表。
+    """
     p = Path(root)
     if p.is_file():
         return [p]
-    files = sorted(list(p.rglob("*_infer.json")) + list(p.rglob("*.csv")))
+    files = list(p.rglob("*_infer.json"))
+    if include_csv:
+        files += list(p.rglob("*.csv"))
     # 排除 imu_train 顺带产出的统计表，那不是推理结果
-    return [f for f in files if "daily_scratch_stats" not in f.name]
+    return sorted(f for f in files if "daily_scratch_stats" not in f.name)
 
 
 async def _run(args) -> int:
     tz_default = _tz(args.tz)
     dmap = DeviceMap.load(args.device_map)
-    files = collect_inputs(args.input)
+    files = collect_inputs(args.input, include_csv=args.include_csv)
     if not files:
-        raise SystemExit(f"{args.input} 下没找到 *_infer.json 或 *.csv")
+        hint = "" if args.include_csv else "（如果你要导入手工整理的 CSV，加 --include-csv）"
+        raise SystemExit(f"{args.input} 下没找到 *_infer.json{'/*.csv' if args.include_csv else ''}{hint}")
 
     logger.info("输入文件 {} 个，时区默认 {}", len(files), args.tz)
     if args.dry_run:
@@ -369,15 +386,19 @@ async def _run(args) -> int:
     # device_id → 累积的事件
     buckets: dict[str, dict] = {}
     unmatched: list[str] = []
+    skipped: list[str] = []
 
     for f in files:
-        if f.suffix == ".json":
-            wins = read_infer_json(f, tz_default)
-            kind, rows = "window", wins
-            src_name = f.name
-        else:
-            kind, rows = read_csv_rows(f, tz_default)
-            src_name = f.name
+        try:
+            if f.suffix == ".json":
+                wins = read_infer_json(f, tz_default)
+                kind, rows = "window", wins
+            else:
+                kind, rows = read_csv_rows(f, tz_default)
+        except (ValueError, KeyError, json.JSONDecodeError) as e:
+            skipped.append(f"{f.name}：{e}")
+            continue
+        src_name = f.name
         if not rows:
             logger.warning("{} 没有可用记录，跳过", f.name)
             continue
@@ -401,6 +422,12 @@ async def _run(args) -> int:
             b["events"].extend({"label": r["label"], "start_ms": r["start_ms"],
                                 "end_ms": r["end_ms"], "conf": r["conf"],
                                 "n_windows": 0} for r in rows)
+
+    if skipped:
+        logger.warning("以下文件解析失败，已跳过（不影响其它文件）：\n  {}",
+                       "\n  ".join(skipped[:20]))
+        if len(skipped) > 20:
+            logger.warning("  ...还有 {} 个未列出", len(skipped) - 20)
 
     if unmatched:
         logger.warning("以下文件在映射表里找不到对应设备，已跳过：\n  {}",
@@ -479,7 +506,11 @@ def main() -> None:
       --device-map backfill/device_map.csv --table-suffix _syn
         """)
     p.add_argument("--input", required=True,
-                   help="推理结果目录（递归找 *_infer.json / *.csv）或单个文件")
+                   help="推理结果目录（默认只递归找 *_infer.json）或单个文件")
+    p.add_argument("--include-csv", action="store_true",
+                   help="额外扫描目录下的 *.csv（默认关闭：run_review_bins_all_days.sh "
+                        "的输出目录里混着复核用的原始片段 CSV，格式跟推理结果不同，"
+                        "不加这个开关不会被误当成推理结果导入）")
     p.add_argument("--device-map", required=True,
                    help="设备映射表 CSV：match,device_sn,device_id,bind_id,timezone")
     p.add_argument("--tz", default="Asia/Shanghai",

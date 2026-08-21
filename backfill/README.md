@@ -245,7 +245,8 @@ docker exec algo_service python backfill/import_infer.py \
 
 | 参数 | 说明 |
 |------|------|
-| `--input` | 结果目录（递归找 `*_infer.json` / `*.csv`）或单个文件 |
+| `--input` | 结果目录（默认只递归找 `*_infer.json`）或单个文件 |
+| `--include-csv` | 额外扫描目录下的 `*.csv`（默认关闭，见下方注意点） |
 | `--device-map` | 设备映射表 CSV |
 | `--tz` | 时间戳不带时区时按此时区解释（默认 `Asia/Shanghai`） |
 | `--window-sec` | 推理窗口长度，用于算事件结束时间（默认 `2.0`） |
@@ -253,7 +254,14 @@ docker exec algo_service python backfill/import_infer.py \
 | `--table-suffix` | 目标表后缀，如 `_syn` → 写入 `d_70_syn` |
 | `--dry-run` | 只解析统计，不写库 |
 
-## 两个注意点
+## 三个注意点
+
+**默认不扫描 `*.csv`。** `run_review_bins_all_days.sh` 的输出目录里除了
+`*_infer.json`，还混着 `by_conf_max/clips_*/` 下复核用的原始片段 CSV
+（表头是 `acc_x/acc_y/acc_z/gyro_x/gyro_y/gyro_z/timestamp`，根本不是推理结果）。
+直接把整个 `RESULT_ROOT/{day}/` 目录传给 `--input` 是安全的——不加
+`--include-csv` 就只会找 `*_infer.json`，这些片段 CSV 不会被误当成推理结果导入。
+单个文件解析失败（表头认不出来之类）只会跳过该文件并打印警告，不会让整个批次失败。
 
 **录制中断会自动断开事件。** 相邻窗口间隔超过 `--max-gap-sec`（默认 2.5 倍步长）
 就不合并——中间隔了半小时没数据的两段"睡觉"，不该被算成一段连续 30 分钟的睡眠。
