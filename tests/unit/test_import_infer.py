@@ -168,3 +168,63 @@ class TestReadCsvRows:
         p = self._write(tmp_path, "foo,bar\n1,2\n")
         with pytest.raises(SystemExit, match="表头无法识别"):
             read_csv_rows(p, SH)
+
+
+# ---------------------------------------------------------------------------
+# 时区归一（CST 等非 IANA 写法）
+# ---------------------------------------------------------------------------
+
+from datetime import datetime
+
+from timezones import canonical_name, resolve
+
+
+class TestTimezoneResolve:
+    def _off(self, name):
+        return datetime(2026, 8, 19, 12, tzinfo=resolve(name)).utcoffset().total_seconds() / 3600
+
+    def test_cst_is_china_by_default(self):
+        """ZoneInfo('CST') 会直接抛异常，必须走别名表，否则静默退回 UTC 差 8 小时。"""
+        assert self._off("CST") == 8
+        assert canonical_name("CST") == "Asia/Shanghai"
+
+    def test_iana_passthrough(self):
+        assert canonical_name("Asia/Shanghai") == "Asia/Shanghai"
+        assert self._off("Asia/Shanghai") == 8
+
+    def test_common_aliases(self):
+        for name in ("PRC", "Asia/Beijing", "Asia/Chongqing", "beijing", "China"):
+            assert self._off(name) == 8, name
+
+    def test_fixed_offset_forms(self):
+        for name in ("+08:00", "UTC+8", "GMT+08", "utc+8"):
+            assert self._off(name) == 8, name
+
+    def test_negative_offset(self):
+        assert self._off("-05:00") == -5
+
+    def test_unknown_falls_back_to_utc(self):
+        assert self._off("完全不存在的时区") == 0
+
+    def test_empty_falls_back(self):
+        assert self._off("") == 0
+        assert self._off(None) == 0
+
+    def test_non_china_iana_still_works(self):
+        """别名表不能把其它地区的合法 IANA 名也拽到中国时区。"""
+        assert self._off("America/Chicago") == -5   # 8月是 CDT
+
+
+class TestJobsTimezoneHandling:
+    def test_cst_local_str_matches_shanghai(self):
+        """修复前 'CST' 会退回 UTC，local_start 差 8 小时。"""
+        from scheduler.jobs import _ts_to_local_str
+        ts = 1787104800000  # 2026-08-19 10:00 +08:00
+        assert _ts_to_local_str(ts, "CST") == _ts_to_local_str(ts, "Asia/Shanghai")
+        assert _ts_to_local_str(ts, "CST") == "2026-08-19 10:00:00"
+
+    def test_cst_day_boundary_matches_shanghai(self):
+        """日聚合边界错 8 小时会直接污染每日汇总和皮肤评估。"""
+        from scheduler.jobs import _day_start_utc_ms
+        ts = 1787140800000  # 2026-08-19 20:00 +08:00
+        assert _day_start_utc_ms(ts, "CST") == _day_start_utc_ms(ts, "Asia/Shanghai")

@@ -90,6 +90,10 @@ class Settings(BaseSettings):
     # W-PEB 基线标准差下限
     baseline_std_floor_wpeb: float = 1.0
 
+    # "CST" 在全球有歧义（中国 UTC+8 / 美国中部 UTC-6）。本项目默认按中国标准时间
+    # 解释；若部署到其它区域，改成对应 IANA 名（如 America/Chicago）。
+    cst_timezone: str = "Asia/Shanghai"
+
     # 夜间抓挠时间窗口（本地时间小时范围，由外部提供 UTC 偏移量推导）
     night_hour_start: int = 22   # 22:00
     night_hour_end: int = 6      # 06:00

@@ -28,6 +28,7 @@ from db.client import AsyncSessionLocal
 from db.tdengine import td_fetch_range, td_get_devices, td_device_span
 from modules.assessment.evaluator import assess_device
 from modules.inference.model import get_classifier
+from timezones import resolve as resolve_tz
 from scheduler.jobs import _write_behavior, _day_start_utc_ms, _ts_to_local_str, _BEHAVIOR_ZH
 
 
@@ -45,10 +46,7 @@ def _parse_day(s: str) -> datetime:
 
 def _day_bounds_utc_ms(day: datetime, tz_name: str) -> tuple[int, int]:
     """把"某个本地日期"换算成 UTC 毫秒区间 [start, end)。"""
-    try:
-        tz = ZoneInfo(tz_name or "UTC")
-    except (ZoneInfoNotFoundError, ValueError):
-        tz = dt_tz.utc
+    tz = resolve_tz(tz_name, default="UTC")
     start = day.replace(tzinfo=tz)
     end = start + timedelta(days=1)
     return int(start.timestamp() * 1000), int(end.timestamp() * 1000)

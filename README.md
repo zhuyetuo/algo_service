@@ -160,6 +160,7 @@ bash scripts/reset_db.sh
 algo_service/
 ├── main.py                      FastAPI 入口，注册路由，启动/关闭调度器
 ├── config.py                    全局配置（pydantic-settings，支持 .env）
+├── timezones.py                 时区名归一（CST/PRC/+08:00 → IANA）
 ├── requirements.txt
 ├── Dockerfile
 ├── docker-compose.yml
@@ -196,7 +197,7 @@ algo_service/
 ├── imu_train/                   Git 子模块：IMU 行为分类模型训练项目
 │
 └── tests/
-    └── unit/                    单元测试（无需真实数据库，141 个测试）
+    └── unit/                    单元测试（无需真实数据库，151 个测试）
 ```
 
 ---
@@ -372,6 +373,7 @@ IMU_DEVICE_GYRO_UNIT=rads
 | `IMU_MODEL_ACC_UNIT` | `ms2` | 模型训练时的加速度单位（`ml_rf.json` 有 `acc_unit` 时以它为准） |
 | `IMU_MODEL_GYRO_UNIT` | `dps` | 模型训练时的角速度单位（`ml_rf.json` 有 `gyro_unit` 时以它为准） |
 | `VERBOSE_INFERENCE` | `false` | 开启后每个推理窗口输出一行详细日志（含片上时间、置信度） |
+| `CST_TIMEZONE` | `Asia/Shanghai` | `"CST"` 按哪个时区解释（全球有歧义，本项目按中国标准时间） |
 | `LOG_LEVEL` | `info` | 日志级别 |
 
 修改环境变量后执行 `docker compose down && docker compose up -d` 生效（无需重新 `--build`）。
@@ -457,5 +459,5 @@ docker exec algo_service python tests/run_evaluation.py --fresh
 docker exec algo_service python -m pytest tests/unit/ -v
 ```
 
-141 个测试，覆盖：特征提取与维度、重力对齐、姿态角、量纲换算与单位诊断、滑动窗口、事件合并、标签平滑、
+151 个测试，覆盖：特征提取与维度、重力对齐、姿态角、量纲换算与单位诊断、滑动窗口、事件合并、标签平滑、
 评分函数、基线算法、TDengine 工具函数、`/health` 接口。

@@ -261,3 +261,29 @@ docker exec algo_service python backfill/import_infer.py \
 **两个模型变体不能都往正式表里导。** 行为表 `ts_start` 有唯一键，
 `majority` 和 `majority_syn` 时间戳完全一样，后导的会被 `INSERT IGNORE` 全部丢掉，
 看起来"导入成功"但一条没进。要并排比较就用 `--table-suffix`。
+
+
+---
+
+# 关于时区（CST）
+
+**离线数据是 Asia/Shanghai，线上 `user.timezone` 存的是 "CST" —— 这两个是同一个时区**
+（中国标准时间 UTC+8），绝对时间不需要任何换算。
+
+行为表的 `ts_start` / `ts_end` 存的是 **UTC 毫秒**，本身与时区无关；时区只影响两件事：
+解析不带偏移的时间字符串，以及 `local_start` / `local_end` / `user_timezone` 这几列怎么写。
+
+但 `"CST"` **不是合法的 IANA 时区名**，`ZoneInfo("CST")` 会直接抛异常。
+原来 `jobs.py` 是 `except Exception: 退回 UTC` 静默吞掉的，后果是：
+
+- `local_start` / `local_end` 比真实本地时间**差 8 小时**
+- 日聚合按 UTC 零点而不是北京零点分界，**每日汇总和皮肤评估的当天范围整体错 8 小时**
+
+现在统一走 `timezones.resolve()`：`CST` / `PRC` / `Asia/Beijing` / `+08:00` / `UTC+8`
+这些写法都会被归一到 `Asia/Shanghai`，落库时 `user_timezone` 也写归一后的名字，
+下游不用再猜。识别不了的名字会打一次警告（而不是静默退回）。
+
+> `CST` 在全球有歧义（中国 UTC+8 / 美国中部 UTC-6）。本项目默认按中国标准时间解释，
+> 由 `CST_TIMEZONE` 环境变量控制，真要部署到美国改成 `America/Chicago` 即可。
+
+所以导入时 `--tz Asia/Shanghai`（默认值）就是对的，不需要额外做换算。

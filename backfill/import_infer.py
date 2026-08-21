@@ -37,6 +37,7 @@ from sqlalchemy import text
 from config import settings
 from db.client import AsyncSessionLocal
 from modules.inference.model import BehaviorLabel
+from timezones import resolve as resolve_tz, canonical_name as canonical_tz
 
 # imu_train 中文类别 → BehaviorLabel
 _ZH_TO_LABEL: dict[str, int] = {
@@ -79,11 +80,13 @@ def parse_ts(s: str, tz: ZoneInfo) -> int:
     return int(dt.timestamp() * 1000)
 
 
-def _tz(name: str) -> ZoneInfo:
-    try:
-        return ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError):
-        raise SystemExit(f"未知时区：{name}")
+def _tz(name: str):
+    """时区名 → tzinfo。支持 IANA 名、CST 等缩写、+08:00 这类偏移写法。"""
+    tz = resolve_tz(name, default="")
+    if tz is None or (getattr(tz, "key", None) is None and str(tz) == "UTC" and
+                      name.strip().upper() not in ("UTC", "GMT", "Z")):
+        raise SystemExit(f"未知时区：{name}（用 IANA 名，如 Asia/Shanghai）")
+    return tz
 
 
 def fmt_local(ts_ms: int, tz: ZoneInfo) -> str:
@@ -333,7 +336,7 @@ async def write_events(device_id: int, bind_id: int | None, tz_name: str,
                 "confidence":     ev["conf"],
                 "local_start":    fmt_local(ev["start_ms"], tz),
                 "local_end":      fmt_local(ev["end_ms"], tz),
-                "tz":             tz_name,
+                "tz":             canonical_tz(tz_name, default="UTC"),
             })
         await db.commit()
     return len(events)
