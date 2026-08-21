@@ -2,7 +2,12 @@
 # 清空算法服务所有 MySQL 数据（行为、环境、评估、基线、汇总、同步断点）
 # 用法: bash scripts/reset_db.sh
 
-MYSQL="docker exec local-mysql8 mysql -h 192.168.33.253 -u root -pHicc-mysql-2026"
+DB_HOST="${DB_HOST:-192.168.33.253}"
+DB_PORT="${DB_PORT:-30100}"
+DB_USER="${DB_USER:-root}"
+DB_PASSWORD="${DB_PASSWORD:-Hicc-pet-mysql-2026}"
+
+MYSQL="docker exec local-mysql8 mysql -h ${DB_HOST} -P ${DB_PORT} -u ${DB_USER} -p${DB_PASSWORD}"
 DEVICES=(70 72 73 94 95 118)
 
 echo ">>> 开始清空算法服务数据库..."

@@ -9,11 +9,11 @@ class Settings(BaseSettings):
     )
 
     # 数据库连接配置
-    db_host: str = "mysql"
-    db_port: int = 3306
+    db_host: str = "192.168.33.253"
+    db_port: int = 30100
     db_name: str = "algo"
-    db_user: str = "algo"
-    db_password: str = "algo"
+    db_user: str = "root"
+    db_password: str = "Hicc-pet-mysql-2026"
 
     @property
     def db_dsn(self) -> str:
@@ -40,6 +40,22 @@ class Settings(BaseSettings):
 
     # 置信度阈值：低于此值的窗口标记为 UNKNOWN（0.0 = 禁用，直接输出模型预测）
     confidence_threshold: float = 0.0
+
+    # ── IMU 量纲统一 ────────────────────────────────────────────────────
+    # 设备上报单位（TDengine 里存的是什么单位）
+    #   加速度: ms2=m/s²  g=重力单位
+    #   角速度: dps=deg/s  rads=rad/s
+    # 模型训练单位优先从 ml_rf.json 的 acc_unit/gyro_unit 读，缺失时用下面的默认值。
+    # 默认全部一致（换算系数=1.0，不改变原有行为）；用
+    #   python backfill/diagnose_signal.py --device-sn <SN>
+    # 拿真实数据确认后再改。
+    imu_device_acc_unit:  str = "ms2"
+    imu_device_gyro_unit: str = "dps"
+    imu_model_acc_unit:   str = "ms2"
+    imu_model_gyro_unit:  str = "dps"
+
+    # 逐窗口多数票平滑的窗口数（奇数，1 = 关闭平滑）
+    smooth_window: int = 5
 
     # 逐窗口详细推理日志（true = 每个 2s 窗口输出一行 [PC | 片上] ML=xxx）
     verbose_inference: bool = False
@@ -73,6 +89,10 @@ class Settings(BaseSettings):
 
     # W-PEB 基线标准差下限
     baseline_std_floor_wpeb: float = 1.0
+
+    # "CST" 在全球有歧义（中国 UTC+8 / 美国中部 UTC-6）。本项目默认按中国标准时间
+    # 解释；若部署到其它区域，改成对应 IANA 名（如 America/Chicago）。
+    cst_timezone: str = "Asia/Shanghai"
 
     # 夜间抓挠时间窗口（本地时间小时范围，由外部提供 UTC 偏移量推导）
     night_hour_start: int = 22   # 22:00

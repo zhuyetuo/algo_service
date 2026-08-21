@@ -26,6 +26,7 @@ from sqlalchemy.exc import OperationalError as SAOperationalError
 from loguru import logger
 
 from config import settings
+from timezones import resolve as resolve_tz, canonical_name as canonical_tz
 from db.client import AsyncSessionLocal
 from db.tdengine import td_fetch, td_fetch_env
 from modules.baseline.updater import run_baseline_update
@@ -63,22 +64,16 @@ def _day_start_utc_ms(ts_ms: int, tz_name: str | None) -> int:
     """返回 ts_ms 所在本地日期的零点对应 UTC 毫秒时间戳。"""
     if not tz_name or tz_name == "UTC":
         return (ts_ms // 86_400_000) * 86_400_000
-    try:
-        tz = ZoneInfo(tz_name)
-        dt = datetime.fromtimestamp(ts_ms / 1000, tz=dt_tz.utc).astimezone(tz)
-        midnight = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        return int(midnight.timestamp() * 1000)
-    except (ZoneInfoNotFoundError, Exception):
-        return (ts_ms // 86_400_000) * 86_400_000
+    tz = resolve_tz(tz_name)
+    dt = datetime.fromtimestamp(ts_ms / 1000, tz=dt_tz.utc).astimezone(tz)
+    midnight = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(midnight.timestamp() * 1000)
 
 
 def _ts_to_local_str(ts_ms: int, tz_name: str | None, date_only: bool = False) -> str:
     """UTC 毫秒时间戳 → 用户本地时间字符串（"%Y-%m-%d %H:%M:%S" 或 "%Y-%m-%d"）。"""
-    try:
-        tz = ZoneInfo(tz_name) if tz_name and tz_name != "UTC" else dt_tz.utc
-        dt = datetime.fromtimestamp(ts_ms / 1000, tz=dt_tz.utc).astimezone(tz)
-    except Exception:
-        dt = datetime.fromtimestamp(ts_ms / 1000, tz=dt_tz.utc)
+    tz = resolve_tz(tz_name)
+    dt = datetime.fromtimestamp(ts_ms / 1000, tz=dt_tz.utc).astimezone(tz)
     return dt.strftime("%Y-%m-%d") if date_only else dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -219,7 +214,7 @@ async def _write_behavior(clf, device_id: int, day_ts: int,
     )
     events = clf.predict(data, base_ts_ms, device_id=device_id)
 
-    tz = user_timezone or "UTC"
+    tz = canonical_tz(user_timezone, default="UTC")
     async with AsyncSessionLocal() as db:
         await db.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {tbl} (
