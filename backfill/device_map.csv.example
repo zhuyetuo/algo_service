@@ -1,0 +1,4 @@
+match,device_sn,device_id,bind_id,timezone
+IMU1,EA:CB:3E:CF:00:11,,,Asia/Shanghai
+IMU2,EA:CB:3E:CF:00:12,,,Asia/Shanghai
+IMU3,EA:CB:3E:CF:00:13,,,Asia/Shanghai

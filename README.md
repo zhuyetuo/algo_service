@@ -185,7 +185,8 @@ algo_service/
 │
 ├── backfill/
 │   ├── run_backfill.py          离线回补：历史 IMU 数据 → 推理 → 写库
-│   └── diagnose_signal.py       信号量级诊断：核对 IMU 单位是否与训练单位一致
+│   ├── diagnose_signal.py       信号量级诊断：核对 IMU 单位是否与训练单位一致
+│   └── import_infer.py          导入 imu_train 那边跑出来的推理结果
 │
 ├── weights/
 │   ├── ml_rf.pkl                RandomForest 模型（joblib，25Hz，window=2s，gravity_aligned）
@@ -195,7 +196,7 @@ algo_service/
 ├── imu_train/                   Git 子模块：IMU 行为分类模型训练项目
 │
 └── tests/
-    └── unit/                    单元测试（无需真实数据库，119 个测试）
+    └── unit/                    单元测试（无需真实数据库，141 个测试）
 ```
 
 ---
@@ -291,6 +292,16 @@ docker exec algo_service python backfill/run_backfill.py --date 2026-08-19 --ass
 ```
 
 不会推进 `device_sync_state` 断点，不影响线上增量推理；重复回补同一天是幂等的。
+
+如果推理是在 **imu_train 那边**跑的（录制数据 + `run_review_bins_all_days.sh`），
+直接把 `RESULT_ROOT/{day}/` 目录拷过来导入，不需要本服务再算一遍：
+
+```bash
+docker exec algo_service python backfill/import_infer.py \
+    --input infer_result_majority/2026_8_19 \
+    --device-map backfill/device_map.csv --dry-run
+```
+
 完整说明见 [backfill/README.md](backfill/README.md)。
 
 ---
@@ -446,5 +457,5 @@ docker exec algo_service python tests/run_evaluation.py --fresh
 docker exec algo_service python -m pytest tests/unit/ -v
 ```
 
-119 个测试，覆盖：特征提取与维度、重力对齐、姿态角、量纲换算与单位诊断、滑动窗口、事件合并、标签平滑、
+141 个测试，覆盖：特征提取与维度、重力对齐、姿态角、量纲换算与单位诊断、滑动窗口、事件合并、标签平滑、
 评分函数、基线算法、TDengine 工具函数、`/health` 接口。

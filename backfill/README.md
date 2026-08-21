@@ -5,7 +5,8 @@
 | 脚本 | 作用 |
 |------|------|
 | `diagnose_signal.py` | 核对设备上报的 IMU 单位是否与模型训练单位一致 |
-| `run_backfill.py` | 把历史 IMU 数据跑一遍推理，结果写进 MySQL 行为表 |
+| `run_backfill.py` | 把 TDengine 历史 IMU 数据跑一遍推理，结果写进 MySQL 行为表 |
+| `import_infer.py` | 把 **imu_train 那边跑出来的推理结果**导入 MySQL 行为表 |
 
 **先跑 `diagnose_signal.py` 再跑回补** —— 单位不对的话回补出来的结果是错的，
 还得删库重来。
@@ -151,3 +152,112 @@ docker exec local-mysql8 mysql -h 192.168.33.253 -P 30100 -u root -pHicc-pet-mys
 **重复跑会不会写重？**
 不会。行为表对 `ts_start` 建了唯一键，写入用 `INSERT IGNORE`，重复回补同一天是幂等的。
 但如果中途换了模型或改了窗口参数，旧结果不会被覆盖——需要先手动删掉那段时间的记录再回补。
+
+
+---
+
+# 三、导入 imu_train 推理结果 `import_infer.py`
+
+设备链路没打通、但 imu_train 那边已经拿录制数据跑出识别结果时用这个。
+和 `run_backfill.py` 的区别：回补是在**本服务里做推理**，这个是**直接吃别处算好的结果**。
+
+## 输入格式
+
+### 首选：imu_train 原生产物 `*_infer.json`（不用额外做转换）
+
+`run_review_bins_all_days.sh` 跑完，`RESULT_ROOT/{day}/` 下每个 CSV 都有一份
+`{stem}_infer.json`，`infer_csv_scratch.py` 写的，结构是：
+
+```json
+{
+  "csv_basename": "xxx_IMU1.csv",
+  "n_windows": 3600,
+  "windows": [
+    {"ts": "2026-08-19 12:36:20.000", "label": "睡觉", "conf": 0.98,
+     "probs": {"抓挠": 0.01, "活动": 0.01, "睡觉": 0.98}}
+  ],
+  "scratch_segments": [...]
+}
+```
+
+工具只用 `windows` 里的 `ts` / `label` / `conf`，其余字段忽略。
+**把整个 `RESULT_ROOT/{day}/` 目录拷过来即可，不需要转成 CSV。**
+
+### 备选：CSV
+
+需要自己出 CSV 时，两种表头都支持，按表头自动识别：
+
+```csv
+# 窗口级（推荐，语义与线上推理一致，由本工具负责合并成事件）
+device_sn,ts,label,conf
+EA:CB:3E:CF:00:11,2026-08-19 12:36:20.000,睡觉,0.9812
+```
+
+```csv
+# 事件级（已经合并好的片段，原样导入）
+device_sn,start_ts,end_ts,label,conf
+EA:CB:3E:CF:00:11,2026-08-19 12:36:20.000,2026-08-19 12:41:20.000,睡觉,0.95
+```
+
+| 列 | 必填 | 说明 |
+|----|------|------|
+| `device_sn` | 否 | 填了就按它匹配设备；不填则按**文件名**匹配映射表 |
+| `ts` / `start_ts` / `end_ts` | 是 | `YYYY-MM-DD HH:MM:SS[.mmm]`、ISO8601（可带 `+08:00`）或 epoch 毫秒 |
+| `label` | 是 | 必须是 `活动` / `睡觉` / `抓挠` 三者之一，其它值整行跳过 |
+| `conf` | 是 | 0~1 小数 |
+
+> 时间戳不带时区偏移时按 `--tz` 解释（默认 `Asia/Shanghai`）。
+> 想彻底避免歧义，直接写成 `2026-08-19T12:36:20.000+08:00`。
+
+## 设备映射表
+
+imu_train 那边的标识是 `IMU1` / `task496_imu1` 这类录制分组键，不是 `device_id`，
+所以要给一张映射表（`match` 对文件名做子串匹配，大小写不敏感，多条命中取最长的）：
+
+```csv
+match,device_sn,device_id,bind_id,timezone
+IMU1,EA:CB:3E:CF:00:11,,,Asia/Shanghai
+IMU2,EA:CB:3E:CF:00:12,,,Asia/Shanghai
+```
+
+`device_sn` 和 `device_id` **至少填一个**：只给 `device_sn` 时会去业务库反查
+`device_id` / `bind_id` / 用户时区；业务库查不到就必须直接填 `device_id`。
+模板见 `backfill/device_map.csv.example`。
+
+## 用法
+
+```bash
+# 1. 先 dry-run，看看每台设备解析出多少事件、行为分布合不合理
+docker exec algo_service python backfill/import_infer.py \
+    --input infer_result_majority/2026_8_19 \
+    --device-map backfill/device_map.csv --dry-run
+
+# 2. 确认无误后写库
+docker exec algo_service python backfill/import_infer.py \
+    --input infer_result_majority/2026_8_19 \
+    --device-map backfill/device_map.csv
+
+# 3. 另一个模型变体导到带后缀的表，方便并排比较，不污染正式表
+docker exec algo_service python backfill/import_infer.py \
+    --input infer_result_majority_syn/2026_8_19 \
+    --device-map backfill/device_map.csv --table-suffix _syn
+```
+
+| 参数 | 说明 |
+|------|------|
+| `--input` | 结果目录（递归找 `*_infer.json` / `*.csv`）或单个文件 |
+| `--device-map` | 设备映射表 CSV |
+| `--tz` | 时间戳不带时区时按此时区解释（默认 `Asia/Shanghai`） |
+| `--window-sec` | 推理窗口长度，用于算事件结束时间（默认 `2.0`） |
+| `--max-gap-sec` | 相邻窗口间隔超过该值就断开（默认按 2.5 倍步长自动推断） |
+| `--table-suffix` | 目标表后缀，如 `_syn` → 写入 `d_70_syn` |
+| `--dry-run` | 只解析统计，不写库 |
+
+## 两个注意点
+
+**录制中断会自动断开事件。** 相邻窗口间隔超过 `--max-gap-sec`（默认 2.5 倍步长）
+就不合并——中间隔了半小时没数据的两段"睡觉"，不该被算成一段连续 30 分钟的睡眠。
+
+**两个模型变体不能都往正式表里导。** 行为表 `ts_start` 有唯一键，
+`majority` 和 `majority_syn` 时间戳完全一样，后导的会被 `INSERT IGNORE` 全部丢掉，
+看起来"导入成功"但一条没进。要并排比较就用 `--table-suffix`。
