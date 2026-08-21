@@ -24,7 +24,7 @@ from loguru import logger
 from sqlalchemy import text
 
 from config import settings
-from db.client import AsyncSessionLocal
+from db.client import AsyncSessionLocal, close_db
 from db.tdengine import td_fetch_range, td_get_devices, td_device_span
 from modules.assessment.evaluator import assess_device
 from modules.inference.model import get_classifier
@@ -283,7 +283,16 @@ def main() -> None:
     p.add_argument("--assess", action="store_true", help="写完行为事件后再跑一遍当天皮肤评估")
     p.add_argument("--dry-run", action="store_true", help="只推理并打印结果分布，不写数据库")
     p.add_argument("--list-devices", action="store_true", help="列出 TDengine 中的设备及数据时间范围后退出")
-    sys.exit(asyncio.run(_run(p.parse_args())))
+    sys.exit(asyncio.run(_run_and_close(p.parse_args())))
+
+
+async def _run_and_close(args) -> int:
+    """跑完主流程后显式释放连接池，避免解释器退出时 aiomysql 连接对象
+    在事件循环已关闭后才被 GC，打印一堆无害但吓人的 RuntimeError。"""
+    try:
+        return await _run(args)
+    finally:
+        await close_db()
 
 
 if __name__ == "__main__":

@@ -37,12 +37,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import numpy as np
 from loguru import logger
 from sqlalchemy import text
 
 from config import settings
-from db.client import AsyncSessionLocal
-from modules.inference.model import BehaviorLabel
+from db.client import AsyncSessionLocal, close_db
+from modules.inference.model import BehaviorLabel, _majority_smooth
 from timezones import resolve as resolve_tz, canonical_name as canonical_tz
 
 # imu_train 中文类别 → BehaviorLabel
@@ -247,6 +248,55 @@ def read_csv_rows(path: Path, tz: ZoneInfo) -> tuple[str, list[dict]]:
 # 窗口 → 事件
 # ---------------------------------------------------------------------------
 
+def _resolve_gap_ms(sorted_wins: list[dict], window_sec: float,
+                    max_gap_sec: float | None) -> int:
+    """
+    相邻窗口间隔超过多少就算录制中断（不合并/不跨段平滑）。
+    max_gap_sec 为 None 时按 2.5 倍步长自动推断（步长取相邻窗口时间差的中位数）。
+    """
+    win_ms = int(window_sec * 1000)
+    if max_gap_sec is not None:
+        return int(max_gap_sec * 1000)
+    diffs = sorted(b["ts_ms"] - a["ts_ms"] for a, b in zip(sorted_wins, sorted_wins[1:]))
+    stride_ms = diffs[len(diffs) // 2] if diffs else win_ms
+    return max(int(stride_ms * 2.5), win_ms)
+
+
+def _split_by_gap(sorted_wins: list[dict], gap_ms: int) -> list[list[dict]]:
+    """按时间间隔切成若干连续段，每段内部没有超过 gap_ms 的空洞。"""
+    if not sorted_wins:
+        return []
+    runs = [[sorted_wins[0]]]
+    for w in sorted_wins[1:]:
+        if w["ts_ms"] - runs[-1][-1]["ts_ms"] <= gap_ms:
+            runs[-1].append(w)
+        else:
+            runs.append([w])
+    return runs
+
+
+def smooth_windows(wins: list[dict], smooth_k: int, window_sec: float,
+                   max_gap_sec: float | None = None) -> list[dict]:
+    """
+    逐窗口多数票平滑，跟线上推理（modules/inference/model.py 的
+    _majority_smooth）用的是同一份实现——imu_train 跑出来的是逐窗口原始预测，
+    没有做这一步，单窗口误判会被切成几秒钟的碎片事件。
+
+    按录制中断分段分别平滑，不跨中断串味（否则中断前后本来无关的两段
+    行为，平滑窗口会把边界的几帧强行拉成同一类）。smooth_k<=1 时原样返回。
+    """
+    if smooth_k <= 1 or not wins:
+        return wins
+    sorted_wins = sorted(wins, key=lambda w: w["ts_ms"])
+    gap_ms = _resolve_gap_ms(sorted_wins, window_sec, max_gap_sec)
+    out = []
+    for run in _split_by_gap(sorted_wins, gap_ms):
+        labels = np.array([w["label"] for w in run])
+        smoothed = _majority_smooth(labels, k=smooth_k)
+        out.extend({**w, "label": int(lbl)} for w, lbl in zip(run, smoothed))
+    return out
+
+
 def merge_windows(wins: list[dict], window_sec: float,
                   max_gap_sec: float | None) -> list[dict]:
     """
@@ -260,13 +310,7 @@ def merge_windows(wins: list[dict], window_sec: float,
         return []
     wins = sorted(wins, key=lambda w: w["ts_ms"])
     win_ms = int(window_sec * 1000)
-
-    if max_gap_sec is None:
-        diffs = sorted(b["ts_ms"] - a["ts_ms"] for a, b in zip(wins, wins[1:]))
-        stride_ms = diffs[len(diffs) // 2] if diffs else win_ms
-        gap_ms = max(int(stride_ms * 2.5), win_ms)
-    else:
-        gap_ms = int(max_gap_sec * 1000)
+    gap_ms = _resolve_gap_ms(wins, window_sec, max_gap_sec)
 
     events, cur = [], None
     for w in wins:
@@ -446,7 +490,9 @@ async def _run(args) -> int:
 
         events = b["events"]
         if b["windows"]:
-            events = events + merge_windows(b["windows"], args.window_sec, args.max_gap_sec)
+            wins = smooth_windows(b["windows"], args.smooth_window,
+                                  args.window_sec, args.max_gap_sec)
+            events = events + merge_windows(wins, args.window_sec, args.max_gap_sec)
         events.sort(key=lambda e: e["start_ms"])
 
         dist: dict[str, int] = {}
@@ -520,10 +566,26 @@ def main() -> None:
     p.add_argument("--max-gap-sec", type=float, default=None,
                    help="相邻窗口间隔超过该值就断开，不合并成一段"
                         "（默认按 2.5 倍步长自动推断）")
+    p.add_argument("--smooth-window", type=int, default=5,
+                   help="仅对窗口级输入（*_infer.json / device_sn,ts,label,conf 格式的 CSV）"
+                        "生效：逐窗口多数票平滑的窗口数，跟线上推理用的是同一份实现"
+                        "（config.py SMOOTH_WINDOW，默认 5）。imu_train 跑出来的是未平滑的"
+                        "逐窗口原始预测，不平滑会把单窗口误判切成几秒钟的碎片事件。"
+                        "传 1 关闭平滑，原样导入。按录制中断分段平滑，不会跨中断串味。"
+                        "事件级输入（start_ts/end_ts 格式）已经是合并好的片段，不受此参数影响。")
     p.add_argument("--table-suffix", default="",
                    help="目标表名后缀，如 _syn 会写入 d_70_syn，用于并排比较模型变体")
     p.add_argument("--dry-run", action="store_true", help="只解析统计，不写库")
-    sys.exit(asyncio.run(_run(p.parse_args())))
+    sys.exit(asyncio.run(_run_and_close(p.parse_args())))
+
+
+async def _run_and_close(args) -> int:
+    """跑完主流程后显式释放连接池，避免解释器退出时 aiomysql 连接对象
+    在事件循环已关闭后才被 GC，打印一堆无害但吓人的 RuntimeError。"""
+    try:
+        return await _run(args)
+    finally:
+        await close_db()
 
 
 if __name__ == "__main__":

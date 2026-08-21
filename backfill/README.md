@@ -251,10 +251,19 @@ docker exec algo_service python backfill/import_infer.py \
 | `--tz` | 时间戳不带时区时按此时区解释（默认 `Asia/Shanghai`） |
 | `--window-sec` | 推理窗口长度，用于算事件结束时间（默认 `2.0`） |
 | `--max-gap-sec` | 相邻窗口间隔超过该值就断开（默认按 2.5 倍步长自动推断） |
+| `--smooth-window` | 逐窗口多数票平滑的窗口数，仅对窗口级输入生效，跟线上推理同一份实现（默认 `5`，传 `1` 关闭） |
 | `--table-suffix` | 目标表后缀，如 `_syn` → 写入 `d_70_syn` |
 | `--dry-run` | 只解析统计，不写库 |
 
-## 三个注意点
+## 四个注意点
+
+**imu_train 的原始输出没做平滑，默认会自动平滑。** `infer_csv_scratch.py` 是逐窗口
+独立预测，没有多数票平滑那一步——单个窗口偶尔误判，就会被切成几秒钟的碎片事件
+（比如"睡觉"事件平均时长只有 10 来秒，明显是噪声而不是真实的短暂苏醒）。
+`--smooth-window`（默认 `5`）在合并成事件之前先做跟线上推理同一份逻辑的多数票平滑，
+按录制中断分段处理，不会跨中断把两段无关行为强行拉成一类。不想要这层处理就传
+`--smooth-window 1` 关闭，原样导入 imu_train 的输出。仅对窗口级输入生效，
+事件级输入（`start_ts`/`end_ts` 格式）已经是合并好的片段，不受这个参数影响。
 
 **默认不扫描 `*.csv`。** `run_review_bins_all_days.sh` 的输出目录里除了
 `*_infer.json`，还混着 `by_conf_max/clips_*/` 下复核用的原始片段 CSV

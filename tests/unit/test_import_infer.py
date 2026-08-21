@@ -12,6 +12,7 @@ from backfill.import_infer import (
     parse_ts,
     read_csv_rows,
     read_infer_json,
+    smooth_windows,
 )
 from modules.inference.model import BehaviorLabel
 
@@ -277,3 +278,49 @@ class TestCollectInputs:
         f = tmp_path / "x_infer.json"
         f.write_text("{}")
         assert collect_inputs(str(f)) == [f]
+
+
+class TestSmoothWindows:
+    def _w(self, ts_ms, label, conf=0.9):
+        return {"ts_ms": ts_ms, "label": label, "conf": conf}
+
+    def test_removes_isolated_flip(self):
+        """imu_train 的逐窗口原始预测没做平滑，单窗口误判会被切成几秒钟的
+        碎片事件——这正是要修的问题。"""
+        wins = ([self._w(i * 1000, SLEEP) for i in range(3)]
+                + [self._w(3000, MOVE)]
+                + [self._w(i * 1000, SLEEP) for i in range(4, 7)])
+        out = smooth_windows(wins, smooth_k=5, window_sec=1.0)
+        assert [w["label"] for w in out] == [SLEEP] * 7
+
+    def test_k1_disables_smoothing(self):
+        wins = [self._w(0, SLEEP), self._w(1000, MOVE), self._w(2000, SLEEP)]
+        out = smooth_windows(wins, smooth_k=1, window_sec=1.0)
+        assert out is wins
+
+    def test_empty_input(self):
+        assert smooth_windows([], smooth_k=5, window_sec=1.0) == []
+
+    def test_does_not_smooth_across_recording_gap(self):
+        """中断两侧是两段互不相关的行为，平滑不能把边界几帧强行拉成同一类。"""
+        wins = ([self._w(i * 1000, SLEEP) for i in range(3)]
+                + [self._w(3_600_000 + i * 1000, MOVE) for i in range(3)])
+        out = smooth_windows(wins, smooth_k=5, window_sec=1.0)
+        labels = [w["label"] for w in out]
+        assert labels == [SLEEP, SLEEP, SLEEP, MOVE, MOVE, MOVE]
+
+    def test_reduces_fragment_event_count(self):
+        """平滑前后拿去合并事件，事件数应该明显变少——这是它存在的意义。"""
+        rng_labels = [SLEEP, SLEEP, MOVE, SLEEP, SLEEP, SLEEP, MOVE, SLEEP,
+                     SLEEP, SLEEP, SLEEP, MOVE, SLEEP, SLEEP]
+        wins = [self._w(i * 1000, lbl) for i, lbl in enumerate(rng_labels)]
+        raw_events = merge_windows(wins, 1.0, None)
+        smoothed = smooth_windows(wins, smooth_k=5, window_sec=1.0)
+        smoothed_events = merge_windows(smoothed, 1.0, None)
+        assert len(smoothed_events) < len(raw_events)
+
+    def test_smoothing_preserves_other_fields(self):
+        wins = [self._w(i * 1000, SLEEP, conf=0.5 + i * 0.1) for i in range(5)]
+        out = smooth_windows(wins, smooth_k=3, window_sec=1.0)
+        assert [w["conf"] for w in out] == [w["conf"] for w in wins]
+        assert [w["ts_ms"] for w in out] == [w["ts_ms"] for w in wins]
