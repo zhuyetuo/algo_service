@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     # 置信度阈值：低于此值的窗口标记为 UNKNOWN（0.0 = 禁用，直接输出模型预测）
     confidence_threshold: float = 0.0
 
+    # 逐窗口多数票平滑的窗口数（奇数，1 = 关闭平滑）
+    smooth_window: int = 5
+
     # 逐窗口详细推理日志（true = 每个 2s 窗口输出一行 [PC | 片上] ML=xxx）
     verbose_inference: bool = False
 

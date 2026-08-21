@@ -72,7 +72,7 @@ docker compose down
 
 | 超级表 | 字段 | 说明 |
 |--------|------|------|
-| `imu_data` | `accel_x/y/z`, `gyro_x/y/z`, TAG:`device_sn` | 6 轴 IMU，50Hz |
+| `imu_data` | `accel_x/y/z`, `gyro_x/y/z`, TAG:`device_sn` | 6 轴 IMU，设备上报 25Hz |
 | `env_data` | `temperature`, `humidity`, `body_temp`, TAG:`device_sn` | 环境温湿度 + 体温 |
 | `battery_data` | `battery_level`, `charging`, TAG:`device_sn` | 电量与充电状态 |
 
@@ -126,7 +126,8 @@ bash scripts/reset_db.sh
 - [项目概述](#项目概述)
 - [目录结构](#目录结构)
 - [算法流程](#算法流程)
-- [特征说明（78 维）](#特征说明78-维)
+- [特征说明](#特征说明)
+- [离线回补（设备链路未打通时用）](#离线回补设备链路未打通时用)
 - [配置项说明](#配置项说明)
 - [测试与验证](#测试与验证)
 
@@ -145,7 +146,7 @@ bash scripts/reset_db.sh
 
 核心功能：
 
-1. **行为识别**：每 15 秒（默认）从 TDengine 拉取最新 IMU 数据，重力轴对齐后按 2s/50% 重叠滑动窗口提取 78 维特征（与 imu_train 特征空间完全对齐），RandomForest 分类为 MOVEMENT(1) / SLEEP(2) / SCRATCH(3)，写入 `pet_dog_behavior.d_{device_id}` 表（含本地时间、用户时区、bind_id、behavior_label 中文标签）。
+1. **行为识别**：每 15 秒（默认）从 TDengine 拉取最新 IMU 数据，按 2s/50% 重叠滑动窗口分割，重力轴对齐后提取 171/193 维特征（与 imu_train 特征空间逐行对齐），RandomForest 分类为 MOVEMENT(1) / SLEEP(2) / SCRATCH(3)，写入 `pet_dog_behavior.d_{device_id}` 表（含本地时间、用户时区、bind_id、behavior_label 中文标签）。
 2. **皮肤健康日评估**：每天凌晨 03:00 UTC 汇总抓挠次数，与个体基线对比计算 Z-score，三层阈值触发分级告警，写入评估表。
 3. **基线更新**：每天凌晨 02:00 UTC 用过去 30 天有效数据更新个体基线（EWMA + 软冻结），写入 `pet_dog_scratch_baseline.pet_skin_baseline` 表。
 4. **环境数据同步**：每个推理周期同步 TDengine `env_data` 的环境温湿度和体温，按本地日期聚合后写入 `pet_dog_environment.d_{device_id}` 表。
@@ -168,7 +169,9 @@ algo_service/
 │
 ├── modules/
 │   ├── inference/
-│   │   ├── model.py             重力对齐、滑动窗口、特征提取（78 维）、RandomForest 推理
+│   │   ├── features.py          特征提取（imu_train src/ml/features.py 的逐行移植）
+│   │   ├── gravity.py           重力轴对齐 + 原始姿态角（imu_train gravity_align.py 移植）
+│   │   ├── model.py             滑动窗口、特征布局自动识别、RandomForest 推理、事件合并
 │   │   └── handler.py           POST /api/v1/inference/predict 端点
 │   ├── assessment/
 │   │   └── evaluator.py         日评估引擎、GET /api/v1/assessment/report/{device_id}
@@ -178,6 +181,9 @@ algo_service/
 ├── scheduler/
 │   └── jobs.py                  APScheduler 三个定时任务
 │
+├── backfill/
+│   └── run_backfill.py          离线回补：历史 IMU 数据 → 推理 → 写库（见 backfill/README.md）
+│
 ├── weights/
 │   ├── ml_rf.pkl                RandomForest 模型（joblib，25Hz，window=2s，gravity_aligned）
 │   └── ml_rf.json               训练元数据（采样率、窗口参数、类别、精度）
@@ -186,7 +192,7 @@ algo_service/
 ├── imu_train/                   Git 子模块：IMU 行为分类模型训练项目
 │
 └── tests/
-    └── unit/                    单元测试（无需真实数据库，88 个测试）
+    └── unit/                    单元测试（无需真实数据库，104 个测试）
 ```
 
 ---
@@ -197,9 +203,9 @@ algo_service/
 
 ```
 TDengine imu_data (accel_x/y/z, gyro_x/y/z, 25 Hz)
-  └─ 重力轴对齐（每窗口旋转至重力→+Z 标准坐标系，与 imu_train 训练预处理一致）
-       └─ 滑动窗口分割 (2 s / 50% 重叠 / 步长 1 s → 每窗口 50 样本)
-            └─ 特征提取 (78 维 = 6 轴 × 13 维：9 时域 + 4 Welch PSD 频域)
+  └─ 滑动窗口分割 (2 s / 50% 重叠 / 步长 1 s → 每窗口 50 样本)
+       └─ 原始 acc 算 pitch/roll → 重力轴对齐 → 姿态角拼到通道末尾（顺序与训练侧一致）
+            └─ 特征提取 (6通道171维 / 8通道193维，与 imu_train 完全一致)
                  └─ RandomForest 分类 → MOVEMENT(1) / SLEEP(2) / SCRATCH(3)
                       └─ 多数票平滑（±2 帧滑动窗口，消除单窗口随机噪声翻转）
                            └─ 合并连续同标签窗口 → 行为事件 (start_time, end_time, confidence)
@@ -234,15 +240,54 @@ TDengine imu_data (accel_x/y/z, gyro_x/y/z, 25 Hz)
 
 ---
 
-## 特征说明（78 维）
+## 特征说明
 
-特征空间与 `imu_train` 子模块保持完全一致，共 78 维：
+特征提取与 `imu_train/src/ml/features.py` **逐行对齐**（`modules/inference/features.py`
+是它的直接移植，改动前必须先同步 imu_train）。通道顺序：
 
-| 轴 | 时域（9 维） | 频域（4 维，Welch PSD） |
-|----|------------|----------------------|
-| ax, ay, az, gx, gy, gz | 均值、标准差、最小值、最大值、极差、RMS、偏度、峰度、过零率 | 频谱均值、频谱标准差、主频、频谱熵 |
+```
+0:3  acc_x/y/z    重力对齐后
+3:6  gyr_x/y/z    重力对齐后
+6:8  pitch, roll  原始未对齐姿态角（必须在重力对齐前算）
+```
+
+| 特征组 | 维度 | 内容 |
+|--------|------|------|
+| 时域（逐通道） | 通道数 × 11 | 均值、标准差、最小值、最大值、极差、RMS、偏度、峰度、**均值穿越率**、IQR、峰值计数 |
+| 频域（仅前 6 通道） | 6 × 8 | 频谱均值、频谱标准差、主频、频谱熵 + 4 个分频段能量占比 |
+| 全局跨通道 | 8 | acc/gyro 的 SMA，各自三轴两两相关系数 |
+| 模长 | 38 | acc 模长、gyro 模长各自的时域(11)+频域(8) |
+| Jerk | 11 | 加加速度模长的时域统计量 |
+
+合计：**6 通道 → 171 维，8 通道 → 193 维**。
+
+服务启动时会读模型的 `n_features_in_` **自动识别**该用哪套特征（193 / 171 / 旧版 78），
+并在日志里打印识别结果；无法识别时直接报错退出，不会静默用错特征。
+
+> 均值穿越率统计的是穿越**窗口自身均值**的次数，而不是绝对 0——重力对齐后 acc_z 恒有
+> 直流偏置，穿越绝对 0 没有意义。
 
 详见 [modules/inference/README.md](modules/inference/README.md)。
+
+---
+
+## 离线回补（设备链路未打通时用）
+
+设备还没接入时，可以把 TDengine 里已有的历史数据跑一遍推理写进数据库：
+
+```bash
+# 看看 TDengine 里有哪些设备、覆盖哪段时间
+docker exec algo_service python backfill/run_backfill.py --list-devices
+
+# 试跑（不写库），确认结果分布合理
+docker exec algo_service python backfill/run_backfill.py --date 2026-08-19 --dry-run
+
+# 正式回补 8月19日，并跑当天皮肤评估
+docker exec algo_service python backfill/run_backfill.py --date 2026-08-19 --assess
+```
+
+不会推进 `device_sync_state` 断点，不影响线上增量推理；重复回补同一天是幂等的。
+完整说明见 [backfill/README.md](backfill/README.md)。
 
 ---
 
@@ -264,6 +309,7 @@ TDengine imu_data (accel_x/y/z, gyro_x/y/z, 25 Hz)
 | `WINDOW_SECONDS` | `2.0` | 滑动窗口长度（秒） |
 | `WINDOW_OVERLAP` | `0.5` | 窗口重叠比例（0.5 = 步长为窗口一半） |
 | `CONFIDENCE_THRESHOLD` | `0.0` | 置信度阈值，低于此值标记为 UNKNOWN（0.0 = 禁用） |
+| `SMOOTH_WINDOW` | `5` | 逐窗口多数票平滑的窗口数（奇数，1 = 关闭） |
 | `VERBOSE_INFERENCE` | `false` | 开启后每个推理窗口输出一行详细日志（含片上时间、置信度） |
 | `LOG_LEVEL` | `info` | 日志级别 |
 
@@ -350,4 +396,5 @@ docker exec algo_service python tests/run_evaluation.py --fresh
 docker exec algo_service python -m pytest tests/unit/ -v
 ```
 
-88 个测试，覆盖：特征提取、评分函数、基线算法、TDengine 工具函数、`/health` 接口。
+104 个测试，覆盖：特征提取与维度、重力对齐、姿态角、滑动窗口、事件合并、标签平滑、
+评分函数、基线算法、TDengine 工具函数、`/health` 接口。

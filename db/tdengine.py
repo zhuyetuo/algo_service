@@ -139,3 +139,62 @@ def td_fetch(device_sn: str, last_ts_ms: int) -> list[dict]:
         ]
     finally:
         conn.close()
+
+
+def td_fetch_range(device_sn: str, start_ms: int, end_ms: int) -> list[dict]:
+    """
+    拉取指定设备在 [start_ms, end_ms) 区间内的全部 IMU 数据（离线回补专用）。
+
+    与 td_fetch 的区别：td_fetch 是增量拉取（ts > 断点，单批上限 td_batch_size），
+    这里按时间区间拉取并自动翻页，直到取完整个区间，不受单批上限限制。
+    """
+    conn = _get_conn()
+    try:
+        cursor = conn.cursor()
+        out: list[dict] = []
+        cursor_ts = start_ms - 1  # 用 > 比较，减 1 以包含 start_ms 本身
+        while True:
+            _exec(cursor, f"""
+                SELECT ts, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
+                FROM {_table()}
+                WHERE device_sn = '{_normalize_sn(device_sn)}'
+                  AND ts > {cursor_ts} AND ts < {end_ms}
+                ORDER BY ts
+                LIMIT {settings.td_batch_size}
+            """)
+            rows = cursor.fetchall()
+            if not rows:
+                break
+            out.extend({
+                "ts_ms": _ts_to_ms(r[0]),
+                "ax": float(r[1]), "ay": float(r[2]), "az": float(r[3]),
+                "gx": float(r[4]), "gy": float(r[5]), "gz": float(r[6]),
+            } for r in rows)
+            if len(rows) < settings.td_batch_size:
+                break
+            cursor_ts = out[-1]["ts_ms"]
+        return out
+    finally:
+        conn.close()
+
+
+def td_device_span(device_sn: str) -> dict | None:
+    """返回设备在超级表中的数据跨度：{first_ts, last_ts, count}，无数据返回 None。"""
+    conn = _get_conn()
+    try:
+        cursor = conn.cursor()
+        _exec(cursor, f"""
+            SELECT FIRST(ts), LAST(ts), COUNT(*)
+            FROM {_table()}
+            WHERE device_sn = '{_normalize_sn(device_sn)}'
+        """)
+        rows = cursor.fetchall()
+        if not rows or rows[0][0] is None:
+            return None
+        return {
+            "first_ts": _ts_to_ms(rows[0][0]),
+            "last_ts":  _ts_to_ms(rows[0][1]),
+            "count":    int(rows[0][2]),
+        }
+    finally:
+        conn.close()
