@@ -40,6 +40,16 @@ _ALIASES: dict[str, str] = {
     "CHINA":          "Asia/Shanghai",
     "GMT":            "UTC",
     "Z":              "UTC",
+
+    # 美国时区缩写：与 CST 不同，这些指代单一 IANA 时区，没有歧义
+    # （生产库 user.timezone 里已有 America/New_York / America/Los_Angeles
+    #   的用户，说明这个服务真实服务过美国用户，这几个缩写会实际出现）
+    "EST": "America/New_York",
+    "EDT": "America/New_York",
+    "PST": "America/Los_Angeles",
+    "PDT": "America/Los_Angeles",
+    "MST": "America/Denver",
+    "MDT": "America/Denver",
 }
 
 # "+08:00" / "UTC+8" / "GMT+08" / "CST-8"（POSIX 风格符号相反）等固定偏移写法

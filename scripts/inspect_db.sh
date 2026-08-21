@@ -26,12 +26,13 @@ pick_client() {
     return
   fi
   if command -v mysql >/dev/null 2>&1; then
-    MYSQL_CMD=(mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" "-p${DB_PASSWORD}")
+    MYSQL_CMD=(mysql --default-character-set=utf8mb4
+               -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" "-p${DB_PASSWORD}")
     CLIENT_DESC="本机 mysql 客户端"
     return
   fi
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$DOCKER_MYSQL_CONTAINER"; then
-    MYSQL_CMD=(docker exec -i "$DOCKER_MYSQL_CONTAINER" mysql
+    MYSQL_CMD=(docker exec -i "$DOCKER_MYSQL_CONTAINER" mysql --default-character-set=utf8mb4
                -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" "-p${DB_PASSWORD}")
     CLIENT_DESC="本机没有 mysql 客户端，自动改用 docker exec ${DOCKER_MYSQL_CONTAINER}"
     return

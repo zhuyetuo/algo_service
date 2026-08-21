@@ -228,3 +228,10 @@ class TestJobsTimezoneHandling:
         from scheduler.jobs import _day_start_utc_ms
         ts = 1787140800000  # 2026-08-19 20:00 +08:00
         assert _day_start_utc_ms(ts, "CST") == _day_start_utc_ms(ts, "Asia/Shanghai")
+
+    def test_us_timezone_abbreviations(self):
+        """生产库真实数据里出现过 EDT，不是 China CST，必须映射到美国时区。"""
+        assert canonical_name("EDT") == "America/New_York"
+        assert canonical_name("EST") == "America/New_York"
+        assert canonical_name("PDT") == "America/Los_Angeles"
+        assert canonical_name("PST") == "America/Los_Angeles"
