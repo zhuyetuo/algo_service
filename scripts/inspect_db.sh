@@ -17,24 +17,66 @@ DB_PASSWORD="${DB_PASSWORD:-Hicc-pet-mysql-2026}"
 BIZ_SCHEMA="${BIZ_SCHEMA:-hiccpet_petos}"
 DOCKER_MYSQL_CONTAINER="${DOCKER_MYSQL_CONTAINER:-local-mysql8}"
 
-if [[ "${MYSQL_VIA_DOCKER:-0}" == "1" ]]; then
-  MYSQL_CMD=(docker exec -i "$DOCKER_MYSQL_CONTAINER" mysql
-             -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" "-p${DB_PASSWORD}")
-else
-  MYSQL_CMD=(mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" "-p${DB_PASSWORD}")
-fi
+# 选择 mysql 客户端：显式指定 > 本机 mysql > docker exec
+pick_client() {
+  if [[ "${MYSQL_VIA_DOCKER:-0}" == "1" ]]; then
+    MYSQL_CMD=(docker exec -i "$DOCKER_MYSQL_CONTAINER" mysql
+               -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" "-p${DB_PASSWORD}")
+    CLIENT_DESC="docker exec ${DOCKER_MYSQL_CONTAINER} mysql"
+    return
+  fi
+  if command -v mysql >/dev/null 2>&1; then
+    MYSQL_CMD=(mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" "-p${DB_PASSWORD}")
+    CLIENT_DESC="本机 mysql 客户端"
+    return
+  fi
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$DOCKER_MYSQL_CONTAINER"; then
+    MYSQL_CMD=(docker exec -i "$DOCKER_MYSQL_CONTAINER" mysql
+               -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" "-p${DB_PASSWORD}")
+    CLIENT_DESC="本机没有 mysql 客户端，自动改用 docker exec ${DOCKER_MYSQL_CONTAINER}"
+    return
+  fi
+  echo "❌ 找不到可用的 mysql 客户端：" >&2
+  echo "   - 本机没装 mysql（command -v mysql 为空）" >&2
+  echo "   - 也没有名为 ${DOCKER_MYSQL_CONTAINER} 的运行中容器" >&2
+  echo >&2
+  echo "   解决办法（任选其一）：" >&2
+  echo "     sudo apt install -y mysql-client" >&2
+  echo "     DOCKER_MYSQL_CONTAINER=<你的mysql容器名> bash scripts/inspect_db.sh" >&2
+  echo "     docker run --rm -i mysql:8 mysql -h ... （临时容器）" >&2
+  exit 1
+}
+pick_client
 
-q() { "${MYSQL_CMD[@]}" --table -e "$1" 2>/dev/null; }
-qv() { "${MYSQL_CMD[@]}" --vertical -e "$1" 2>/dev/null; }
+# 注意：这里**不吞掉 stderr**。之前吞掉导致连接失败时全部小节静默为空，
+# 看起来像"库里没数据"，实际是根本没连上。
+q()  { "${MYSQL_CMD[@]}" --table    -e "$1"; }
+qv() { "${MYSQL_CMD[@]}" --vertical -e "$1"; }
+# 只在"表可能不存在"的探测处用这个，失败不打断整体流程
+qq() { "${MYSQL_CMD[@]}" --table -e "$1" 2>&1 | grep -v "Using a password" || true; }
 
 hr() { echo; echo "════════════════════════════════════════════════════════════════"; \
        echo "▶ $1"; echo "════════════════════════════════════════════════════════════════"; }
 
 echo "MySQL 结构快照  $(date '+%Y-%m-%d %H:%M:%S')"
-echo "目标: ${DB_HOST}:${DB_PORT}  业务库: ${BIZ_SCHEMA}"
+echo "目标: ${DB_HOST}:${DB_PORT}  用户: ${DB_USER}  业务库: ${BIZ_SCHEMA}"
+echo "客户端: ${CLIENT_DESC}"
 
 hr "0. 连通性与版本"
-q "SELECT VERSION() AS mysql_version, NOW() AS db_now, @@system_time_zone AS sys_tz, @@time_zone AS session_tz;"
+# 先硬探一次；连不上就直接退出，不再让后面几十条查询各自静默失败
+if ! q "SELECT VERSION() AS mysql_version, NOW() AS db_now,
+        @@system_time_zone AS sys_tz, @@time_zone AS session_tz;"; then
+  echo >&2
+  echo "❌ 连接失败，后面的查询就不跑了。排查方向：" >&2
+  echo "   1) 端口/地址对不对：nc -vz ${DB_HOST} ${DB_PORT}" >&2
+  echo "   2) 账号密码对不对（当前用 DB_USER=${DB_USER}）" >&2
+  echo "   3) 该账号是否允许从这台机器连过来（MySQL 的 host 授权）" >&2
+  echo "   4) 走容器试试：MYSQL_VIA_DOCKER=1 bash scripts/inspect_db.sh" >&2
+  echo >&2
+  echo "   .env 里的实际值：" >&2
+  grep -E '^DB_(HOST|PORT|USER|PASSWORD)=' .env 2>/dev/null | sed 's/PASSWORD=.*/PASSWORD=***/' >&2
+  exit 1
+fi
 
 hr "1. 所有库"
 q "SELECT SCHEMA_NAME, DEFAULT_CHARACTER_SET_NAME AS charset, DEFAULT_COLLATION_NAME AS collation
@@ -55,7 +97,7 @@ for t in $(q "SELECT TABLE_NAME FROM information_schema.TABLES
               WHERE TABLE_SCHEMA='pet_dog_behavior' ORDER BY TABLE_NAME LIMIT 3;" \
            | grep -oE 'd_[0-9]+'); do
   echo; echo "--- pet_dog_behavior.$t ---"
-  qv "SHOW CREATE TABLE pet_dog_behavior.$t;"
+  qq "SHOW CREATE TABLE pet_dog_behavior.$t;"
   echo "-- 列定义 --"
   q "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, COLUMN_KEY, EXTRA
      FROM information_schema.COLUMNS
@@ -84,21 +126,21 @@ for tbl in pet_dog_skin_assessment pet_dog_environment pet_dog_daily_summary; do
          WHERE TABLE_SCHEMA='$tbl' ORDER BY TABLE_NAME LIMIT 1;" | grep -oE 'd_[0-9]+' | head -1)
   [[ -z "$t" ]] && { echo; echo "--- $tbl 下没有分表 ---"; continue; }
   echo; echo "--- $tbl.$t ---"
-  qv "SHOW CREATE TABLE $tbl.$t;"
+  qq "SHOW CREATE TABLE $tbl.$t;"
   echo "-- 最新 3 行 --"
-  q "SELECT * FROM $tbl.$t LIMIT 3;"
+  qq "SELECT * FROM $tbl.$t LIMIT 3;"
 done
 
 echo; echo "--- pet_dog_scratch_baseline.pet_skin_baseline ---"
-qv "SHOW CREATE TABLE pet_dog_scratch_baseline.pet_skin_baseline;"
-q "SELECT * FROM pet_dog_scratch_baseline.pet_skin_baseline LIMIT 5;"
+qq "SHOW CREATE TABLE pet_dog_scratch_baseline.pet_skin_baseline;"
+qq "SELECT * FROM pet_dog_scratch_baseline.pet_skin_baseline LIMIT 5;"
 
 hr "5. algo 库：同步断点与错误表"
-qv "SHOW CREATE TABLE algo.device_sync_state;"
-q "SELECT * FROM algo.device_sync_state ORDER BY device_id;"
+qq "SHOW CREATE TABLE algo.device_sync_state;"
+qq "SELECT * FROM algo.device_sync_state ORDER BY device_id;"
 echo "-- processing_errors --"
-qv "SHOW CREATE TABLE algo.processing_errors;"
-q "SELECT status, COUNT(*) AS n FROM algo.processing_errors GROUP BY status;"
+qq "SHOW CREATE TABLE algo.processing_errors;"
+qq "SELECT status, COUNT(*) AS n FROM algo.processing_errors GROUP BY status;"
 
 hr "6. 业务库：设备与绑定（决定 device_id / bind_id / 时区怎么填）"
 q "SELECT TABLE_NAME, TABLE_ROWS FROM information_schema.TABLES
