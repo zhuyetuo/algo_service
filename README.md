@@ -19,7 +19,7 @@ cp .env.example .env
 docker compose up -d --build
 
 # 4. 确认两个数据库连接正常
-curl http://localhost:8383/health
+curl http://localhost:8000/health
 # 期望返回：{"status":"ok","mysql":"ok","tdengine":"ok"}
 ```
 

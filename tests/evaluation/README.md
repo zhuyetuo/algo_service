@@ -50,7 +50,7 @@ tests/evaluation/
 
 ```bash
 # 1. 更新健康检查结果
-curl http://localhost:8383/health
+curl http://localhost:8000/health
 # 将返回的 JSON 填入 health_check.json 的 result 字段
 
 # 2. 更新单元测试结果

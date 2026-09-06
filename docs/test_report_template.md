@@ -152,7 +152,7 @@ docker exec algo_service python -m pytest tests/unit/ -v
 > 数据文件：`tests/evaluation/service/health_check.json`
 
 ```bash
-curl http://localhost:8383/health
+curl http://localhost:8000/health
 ```
 
 ```json
