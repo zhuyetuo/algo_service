@@ -11,6 +11,6 @@ COPY . .
 
 RUN mkdir -p logs && chmod 777 logs
 
-EXPOSE 8383
+EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8383"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

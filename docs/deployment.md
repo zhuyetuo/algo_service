@@ -33,7 +33,7 @@ docker compose up -d --build
 ### 3. 验证连接
 
 ```bash
-curl http://localhost:8383/health
+curl http://localhost:8000/health
 ```
 
 返回示例：
