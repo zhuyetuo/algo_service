@@ -14,15 +14,12 @@ from log import setup_logging
 setup_logging()
 from modules.inference.handler import router as inference_router
 from modules.assessment.evaluator import router as assessment_router
-from modules.label_pipeline.handler import router as label_pipeline_router
-from modules.label_pipeline.jobs_db import init_jobs_table
 from scheduler.jobs import start_scheduler, stop_scheduler
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    await init_jobs_table()
     start_scheduler()
     yield
     stop_scheduler()
@@ -37,7 +34,6 @@ app = FastAPI(
 
 app.include_router(inference_router, prefix="/api/v1/inference", tags=["inference"])
 app.include_router(assessment_router, prefix="/api/v1/assessment", tags=["assessment"])
-app.include_router(label_pipeline_router, prefix="/api/v1/label", tags=["label_infra"])
 
 
 @app.get("/health", tags=["ops"])
