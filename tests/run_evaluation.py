@@ -350,8 +350,8 @@ def _mk_health_check() -> tuple[str, str]:
     """Returns (json_block, table_rows) from health_check.json."""
     hc_path = EVAL_SERVICE / "health_check.json"
     if not hc_path.exists():
-        return ('{"status": "⚠️ 未检测，请运行 curl http://localhost:8000/health"}',
-                "| 服务启动 | FastAPI 服务正常监听 8000 端口 | ⏳ 待验证 |")
+        return ('{"status": "⚠️ 未检测，请运行 curl http://localhost:8383/health"}',
+                "| 服务启动 | FastAPI 服务正常监听 8383 端口 | ⏳ 待验证 |")
     data = json.loads(hc_path.read_text(encoding="utf-8"))
     result = data.get("result", {})
     json_str = json.dumps(result, ensure_ascii=False, indent=2)
@@ -363,7 +363,7 @@ def _mk_health_check() -> tuple[str, str]:
     svc_ok = result.get("status", "") == "ok"
     table = ("| 检查项 | 说明 | 结果 |\n"
              "|--------|------|------|\n"
-             f"| 服务启动 | FastAPI 服务正常监听 8000 端口 | {'✅ 正常' if svc_ok else '❌ 异常'} |\n"
+             f"| 服务启动 | FastAPI 服务正常监听 8383 端口 | {'✅ 正常' if svc_ok else '❌ 异常'} |\n"
              f"| MySQL 连接 | 执行 `SELECT 1` 验证数据库可达 | {_status('mysql')} |\n"
              f"| TDengine 连接 | 调用 REST API 查询版本号验证可达 | {_status('tdengine')} |")
     return json_str, table
