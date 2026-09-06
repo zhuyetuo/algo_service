@@ -34,9 +34,15 @@ services:
       - TD_PASSWORD=${TD_PASSWORD:-taosdata}
       - TD_DATABASE=${TD_DATABASE:-hiccpet_device}
       - TD_SUPERTABLE=${TD_SUPERTABLE:-imu_data}
+      # label_infra 对接：容器内 NAS 挂载点固定 /nas，宿主机路径由 NAS_HOST_PATH 指定
+      - NAS_ROOT=/nas
+      - IMU_TRAIN_REPO_DIR=${IMU_TRAIN_REPO_DIR:-imu_train}
+      - LABEL_INFRA_CALLBACK_URL=${LABEL_INFRA_CALLBACK_URL:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - .:/app
+      # 跟 label_infra 后端挂同一份 NAS（宿主机上的 ai_data 目录），/infer、/train 只传相对路径
+      - ${NAS_HOST_PATH:-/home/toky/ai_data}:/nas
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
