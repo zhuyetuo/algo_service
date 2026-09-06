@@ -26,6 +26,16 @@ class Settings(BaseSettings):
     # 日志级别
     log_level: str = "info"
 
+    # ── label_infra 集成（/infer、/train 两个接口用）─────────────────────
+    # 跟 label_infra 挂载同一份 NAS，/infer、/train 接口里传的都是相对这个
+    # 根目录的相对路径，不在 HTTP body 里传文件内容
+    nas_root: str = "/home/toky/ai_data"
+    # imu_train 子模块相对本仓库根目录的路径，训练任务在这个目录下跑 train_custom.sh
+    imu_train_repo_dir: str = "imu_train"
+    # 训练任务完成/失败后主动回调 label_infra 的地址（POST {url}/{job_id}），
+    # 留空则不回调，label_infra 只能靠轮询 GET /train/{job_id} 拿结果
+    label_infra_callback_url: str = ""
+
     # 模型文件路径（imu_train 训练产出，joblib 格式）
     model_path: str = "weights/ml_rf.pkl"
 
