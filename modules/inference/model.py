@@ -15,30 +15,16 @@ from modules.inference.gravity import prepare_windows
 _logger = logging.getLogger(__name__)
 
 
-class BehaviorLabel(IntEnum):
-    UNKNOWN  = 0
-    MOVEMENT = 1
-    SLEEP    = 2
-    SCRATCH  = 3
-
-
-# imu_train 类别中文名 → BehaviorLabel
-# 类别顺序由 ml_rf.json 的 classes 决定，不写死下标——换模型时顺序可能变
-_ZH_TO_LABEL: dict[str, int] = {
-    "抓挠": BehaviorLabel.SCRATCH,
-    "活动": BehaviorLabel.MOVEMENT,
-    "睡觉": BehaviorLabel.SLEEP,
-}
-
-_LABEL_ZH: dict[int, str] = {
-    int(BehaviorLabel.UNKNOWN):  "未知",
-    int(BehaviorLabel.MOVEMENT): "活动",
-    int(BehaviorLabel.SLEEP):    "睡觉",
-    int(BehaviorLabel.SCRATCH):  "抓挠",
-}
-
-# classes 缺失时的兜底顺序（与仓库内已提交模型一致）
-_DEFAULT_CLASSES = ["抓挠", "活动", "睡觉"]
+# 标签表搬到 labels.py 了：装模型的脚本要查这张表，而从这里 import 会
+# 连带把 joblib/sklearn 全拖起来——装不上依赖的机器上那个检查就跳过了，
+# 而跳过的正是"新类别写不进库"这条最要紧的检查。
+# 这里重新导出，老的 import 路径不受影响。
+from modules.inference.labels import (  # noqa: E402,F401
+    DEFAULT_CLASSES as _DEFAULT_CLASSES,
+    LABEL_ZH as _LABEL_ZH,
+    ZH_TO_LABEL as _ZH_TO_LABEL,
+    BehaviorLabel,
+)
 
 
 # ---------------------------------------------------------------------------
