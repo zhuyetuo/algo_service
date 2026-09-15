@@ -48,18 +48,27 @@ def test_matching_model_passes():
     assert warn == []
 
 
-def test_sample_rate_mismatch_is_blocked_with_the_fix():
-    """采样率对不上要拦下来，而且要说清楚改哪个变量。
+def test_sample_rate_mismatch_says_resample_not_relabel():
+    """采样率对不上要拦下来，而且**给的办法必须是对的**。
 
-    **这是真实存在的情况**：仓库里现在这个模型是 16Hz 训练的，
-    而 IMU_SAMPLE_RATE 默认 25。32 个点在 25Hz 下只有 1.28 秒，
-    不是训练时的 2 秒，特征整体偏——不报错。
+    我第一版写的是"把 IMU_SAMPLE_RATE 改成 16"——那是错的，而且更糟：
+    数据本身还是 25Hz，改配置只是骗代码说它是 16Hz，窗口变成 32 点、
+    真实时长掉到 1.28 秒，FFT 还会按错的 fs 算。
+    正确的做法是**加重采样**（25→16Hz，跟训练同一套算法）。
+
+    窗口时长本身是对的：代码用 window_seconds × fs 算点数，
+    2.0s × 25 = 50 点，跟训练的 2.0s × 16 = 32 点**时长一样**，
+    差的是密度。这一点也要说清楚，不然人会去改 WINDOW_SECONDS。
     """
     bad, _ = _script().check(_meta(hz=16, window_size=32), _S())
-    assert any("采样率" in b for b in bad), bad
-    msg = next(b for b in bad if "采样率" in b)
-    assert "IMU_SAMPLE_RATE 改成 16" in msg, "没说要改成多少，看了也不知道怎么办"
-    assert "1.28" in msg, "没把实际时长算出来，说服力不够"
+    msg = [b for b in bad if "采样率" in b]
+    assert msg, bad
+    m = msg[0]
+    assert "要加重采样" in m, "没说该怎么办"
+    assert "不是改 IMU_SAMPLE_RATE" in m, \
+        "还在建议改 IMU_SAMPLE_RATE——那是错的办法，会让效果更差"
+    assert "时长**是对的" in m or "时长" in m, "没说清窗口时长其实是对的，人会去改 WINDOW_SECONDS"
+    assert "32 点" in m and "50 点" in m, "没把两边的点数摆出来"
 
 
 def test_window_and_stride_mismatch_are_blocked():
