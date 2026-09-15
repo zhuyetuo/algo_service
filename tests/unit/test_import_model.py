@@ -48,35 +48,32 @@ def test_matching_model_passes():
     assert warn == []
 
 
-def test_sample_rate_mismatch_says_resample_not_relabel():
-    """采样率对不上要拦下来，而且**给的办法必须是对的**。
+def test_sample_rate_mismatch_is_now_handled_by_resampling():
+    """采样率不一致不再拦截——推理链里有重采样了（跟训练同一套算法）。
 
-    我第一版写的是"把 IMU_SAMPLE_RATE 改成 16"——那是错的，而且更糟：
-    数据本身还是 25Hz，改配置只是骗代码说它是 16Hz，窗口变成 32 点、
-    真实时长掉到 1.28 秒，FFT 还会按错的 fs 算。
-    正确的做法是**加重采样**（25→16Hz，跟训练同一套算法）。
-
-    窗口时长本身是对的：代码用 window_seconds × fs 算点数，
-    2.0s × 25 = 50 点，跟训练的 2.0s × 16 = 32 点**时长一样**，
-    差的是密度。这一点也要说清楚，不然人会去改 WINDOW_SECONDS。
+    但**必须说出来**，而且必须明确说不要去改 IMU_SAMPLE_RATE：
+    那个值得是设备真实的上报速率，改了会让重采样按错的源频率算，反而全错。
+    （我早先的版本建议改它，那是错的。）
     """
-    bad, _ = _script().check(_meta(hz=16, window_size=32), _S())
-    msg = [b for b in bad if "采样率" in b]
-    assert msg, bad
-    m = msg[0]
-    assert "要加重采样" in m, "没说该怎么办"
-    assert "不是改 IMU_SAMPLE_RATE" in m, \
-        "还在建议改 IMU_SAMPLE_RATE——那是错的办法，会让效果更差"
-    assert "时长**是对的" in m or "时长" in m, "没说清窗口时长其实是对的，人会去改 WINDOW_SECONDS"
-    assert "32 点" in m and "50 点" in m, "没把两边的点数摆出来"
+    bad, warn = _script().check(_meta(hz=16, window_size=16), _S())
+    assert not any("采样率" in b for b in bad), f"不该再拦：{bad}"
+    m = [w for w in warn if "重采样" in w]
+    assert m, warn
+    assert "不要" in m[0] and "IMU_SAMPLE_RATE" in m[0], \
+        "没警告别去改 IMU_SAMPLE_RATE，人还是会去改"
 
 
-def test_window_and_stride_mismatch_are_blocked():
+def test_geometry_from_meta_is_a_warning_not_a_block():
+    """窗口/步长以模型元数据为准，对不上只是提醒。
+
+    拦下来的话，每换一个几何不同的模型都要先改环境变量——而那正是
+    以前静默出错的来源（配置和模型各说各的）。
+    """
     s = _script()
-    bad, _ = s.check(_meta(window_s=4.0), _S())
-    assert any("WINDOW_SECONDS 改成 4.0" in b for b in bad), bad
-    bad, _ = s.check(_meta(stride_s=0.5), _S())
-    assert any("WINDOW_OVERLAP 改成 0.75" in b for b in bad), bad
+    bad, warn = s.check(_meta(window_s=1.0, stride_s=0.5), _S())
+    assert bad == [], bad
+    assert any("窗口长度按模型元数据走" in w for w in warn), warn
+    assert any("步长按模型元数据走" in w for w in warn), warn
 
 
 def test_new_classes_without_a_code_are_blocked():
@@ -84,13 +81,23 @@ def test_new_classes_without_a_code_are_blocked():
     没有编码——那些窗口识别出来也写不进库，被静默丢掉，
     表现是「这段没识别出东西」，不是报错。
     """
+    # 现在 5 类全都有编码了，所以拿一个真没有的类别来验
     bad, _ = _script().check(
-        _meta(classes=["活动", "睡觉", "抓挠", "未佩戴", "甩身体"]), _S())
+        _meta(classes=["活动", "睡觉", "抓挠", "喝水", "吠叫"]), _S())
     msg = [b for b in bad if "BehaviorLabel" in b]
     assert msg, bad
-    assert "未佩戴" in msg[0] and "甩身体" in msg[0]
-    # 已有的三个不能被误报
-    assert "活动" not in msg[0].split("：")[1].split("。")[0]
+    assert "喝水" in msg[0] and "吠叫" in msg[0]
+    assert "活动" not in msg[0].split("：")[1].split("。")[0], "已有的类别被误报了"
+
+
+def test_the_five_class_model_is_fully_mapped():
+    """线上那个 5 类模型的每个类别都要有编码——**一个都不能漏**。
+
+    漏掉的那类识别出来也写不进库，被静默丢掉。
+    """
+    bad, _ = _script().check(
+        _meta(classes=["活动", "睡觉", "抓挠", "未佩戴", "甩身体"]), _S())
+    assert not any("BehaviorLabel" in b for b in bad), bad
 
 
 def test_missing_classes_is_blocked():

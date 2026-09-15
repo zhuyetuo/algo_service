@@ -60,36 +60,28 @@ def check(meta: dict, settings) -> tuple[list[str], list[str]]:
 
     hz = meta.get("hz")
     if hz and int(hz) != int(settings.imu_sample_rate):
-        bad.append(
-            f"采样率不一致：模型是 {hz}Hz 数据训练的，服务喂的是 "
-            f"{settings.imu_sample_rate}Hz（IMU_SAMPLE_RATE）。\n"
-            f"    窗口**时长**是对的（都是 {settings.window_seconds} 秒），"
-            f"差的是窗口里的点数：训练 {int(float(meta.get('window_s') or 0) * int(hz))} 点，"
-            f"线上 {int(float(settings.window_seconds) * int(settings.imu_sample_rate))} 点。\n"
-            f"    训练数据是先低通再重采样到 {hz}Hz 的，高频成分被滤掉了；\n"
-            f"    直接喂 {settings.imu_sample_rate}Hz 的话模型看到的是它没见过的分布，\n"
-            f"    频域特征的频率轴也不一样。不报错，只是效果打折。\n"
-            f"    → **要加重采样**（{settings.imu_sample_rate}Hz → {hz}Hz，"
-            f"跟训练用同一套算法），不是改 IMU_SAMPLE_RATE。\n"
-            f"      把 IMU_SAMPLE_RATE 改成 {hz} 是**更糟**的：数据本身还是 "
-            f"{settings.imu_sample_rate}Hz，\n"
-            f"      只是骗代码说它是 {hz}Hz——窗口变成 "
-            f"{int(float(settings.window_seconds) * int(hz))} 点、真实时长只有 "
-            f"{round(float(settings.window_seconds) * int(hz) / int(settings.imu_sample_rate), 2)} 秒，\n"
-            f"      而且 FFT 会按错的 fs 算。")
+        # 现在有重采样了（modules/inference/resample.py，跟训练同一套算法），
+        # 所以这不再是拦截项——但要说出来，好让人知道这条路径被用上了
+        warn.append(
+            f"模型是 {hz}Hz 训练的，设备上报 {settings.imu_sample_rate}Hz "
+            f"（IMU_SAMPLE_RATE）→ 推理时会重采样到 {hz}Hz"
+            f"（training_match，跟训练同一套算法）。\n"
+            f"    **不要**为此去改 IMU_SAMPLE_RATE：那个值必须是设备真实的\n"
+            f"    上报速率，改了会让重采样按错的源频率算，反而全错。")
 
+    # 窗口长度和步长现在**以模型元数据为准**（见 model.py 里
+    # BehaviorClassifier.__init__），环境变量只在元数据缺这几项时兜底。
+    # 所以它们对不上不再是问题，但同样要说出来
     ws = meta.get("window_s")
     if ws and abs(float(ws) - float(settings.window_seconds)) > 0.01:
-        bad.append(f"窗口长度不一致：训练 {ws}s，服务 {settings.window_seconds}s。\n"
-                   f"    → 把 WINDOW_SECONDS 改成 {ws}")
-
+        warn.append(f"窗口长度按模型元数据走：{ws}s（WINDOW_SECONDS={settings.window_seconds} "
+                    f"只在元数据缺这项时兜底）")
     ss = meta.get("stride_s")
     if ss:
         infer_stride = float(settings.window_seconds) * (1.0 - float(settings.window_overlap))
         if abs(float(ss) - infer_stride) > 0.01:
-            want = 1.0 - float(ss) / float(settings.window_seconds)
-            bad.append(f"步长不一致：训练 {ss}s，服务 {round(infer_stride, 3)}s。\n"
-                       f"    → 把 WINDOW_OVERLAP 改成 {round(want, 3)}")
+            warn.append(f"步长按模型元数据走：{ss}s（配置算出来是 "
+                        f"{round(infer_stride, 3)}s，只在元数据缺这项时兜底）")
 
     ga = meta.get("gravity_aligned")
     if ga is not None and not bool(ga):

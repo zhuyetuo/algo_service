@@ -19,6 +19,7 @@ _logger = logging.getLogger(__name__)
 # 连带把 joblib/sklearn 全拖起来——装不上依赖的机器上那个检查就跳过了，
 # 而跳过的正是"新类别写不进库"这条最要紧的检查。
 # 这里重新导出，老的 import 路径不受影响。
+from modules.inference import geometry as _geom  # noqa: E402
 from modules.inference.labels import (  # noqa: E402,F401
     DEFAULT_CLASSES as _DEFAULT_CLASSES,
     LABEL_ZH as _LABEL_ZH,
@@ -123,9 +124,21 @@ class BehaviorClassifier:
             raise FileNotFoundError(f"模型文件不存在：{path}")
         self._model = joblib.load(path)
 
-        self._fs   = settings.imu_sample_rate
-        self._win  = int(settings.window_seconds * self._fs)
-        self._step = int(self._win * (1 - settings.window_overlap))
+        # ── 几何以**模型元数据**为准，不是以环境变量为准 ──────────────
+        #
+        # 设备上报 self._device_fs（IMU_SAMPLE_RATE），模型按 self._fs 训练。
+        # 两者不同时先重采样，再按模型自己的窗口长度/步长分窗。
+        #
+        # 为什么不靠环境变量对齐：对不上时**没有任何迹象**。特征维度也拦不住
+        # ——feature_dim(32,8,16) 和 feature_dim(50,8,25) 都是 193。
+        # 仓库里原来那个模型就是这么跑着的：16Hz 训练、喂 25Hz 原始数据。
+        g = _geom.resolve(meta, settings.imu_sample_rate,
+                          settings.window_seconds, settings.window_overlap)
+        self._device_fs = g["device_fs"]
+        self._fs = g["fs"]
+        self._win = g["win"]
+        self._step = g["step"]
+        self._need_resample = g["need_resample"]
         self._conf_threshold = settings.confidence_threshold
         self._smooth_k = settings.smooth_window
 
@@ -265,6 +278,22 @@ class BehaviorClassifier:
         )
         return F.extract_features(prepared, self._fs)
 
+    def _prepare(self, data: np.ndarray) -> np.ndarray:
+        """量纲统一 +（需要时）重采样到模型的采样率。
+
+        顺序不能反：量纲统一必须在分窗和重力对齐之前，特征里大量是有量纲的
+        绝对量；重采样要在量纲统一之后，不然低通滤的是不同刻度的信号。
+        """
+        data = U.apply_scales(data, self._acc_scale, self._gyro_scale)
+        if self._need_resample and len(data) > 1:
+            from modules.inference.resample import resample_training_match
+            # **必须先判相等**：那个函数没有恒等短路，source==target 时
+            # 会白白少掉一个点（250 点进去出来 249）
+            data = np.asarray(
+                resample_training_match(data, self._device_fs, self._fs),
+                dtype=np.float32)
+        return data
+
     def predict_proba_windows(self, data: np.ndarray) -> np.ndarray:
         """逐窗口的**全概率** (n_windows, n_classes)，列顺序 = self._classes。
 
@@ -275,7 +304,7 @@ class BehaviorClassifier:
         这里**不做**平滑、不做置信度打 UNKNOWN：那两件事是老后处理的手段，
         v2 里由 viterbi 和段过滤接手，再叠一层只会两边互相打架。
         """
-        data = U.apply_scales(data, self._acc_scale, self._gyro_scale)
+        data = self._prepare(data)
         windows = segment(data, self._win, self._step)
         if not windows:
             return np.empty((0, len(self._classes)), dtype=np.float32)
@@ -306,8 +335,7 @@ class BehaviorClassifier:
         data: (N, 6) 原始 IMU 序列
         返回 (labels, confidences)，均为逐窗口结果，labels 已映射为 BehaviorLabel。
         """
-        # 量纲统一必须在分窗和重力对齐之前：特征里大量是有量纲的绝对量
-        data = U.apply_scales(data, self._acc_scale, self._gyro_scale)
+        data = self._prepare(data)
 
         windows = segment(data, self._win, self._step)
         if not windows:
