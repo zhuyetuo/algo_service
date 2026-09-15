@@ -27,7 +27,11 @@ class Settings(BaseSettings):
     log_level: str = "info"
 
     # 模型文件路径（imu_train 训练产出，joblib 格式）
-    model_path: str = "weights/ml_rf.pkl"
+    # 默认用 5 类的那个（活动/睡觉/抓挠/未佩戴/甩身体，16Hz，1s 窗口）——
+    # 就是线上 label_service 和标注平台「稳定版 v2」在用的那份，效果最好。
+    # 老的 3 类模型还在 weights/ml_rf.pkl，MODEL_PATH 指回去就能换。
+    # 几何（采样率/窗口/步长）由模型自己的 .json 决定，换模型不用改别的配置。
+    model_path: str = "weights/stable_v2_rf/ml_rf.pkl"
 
     # IMU 采样率（Hz）— 设备实际上报采样率，与 imu_train 训练时 --hz 参数一致
     # 历史值: 50→20; 当前设备固件上报 25Hz，模型也以 25Hz 训练

@@ -31,16 +31,15 @@ from db.client import AsyncSessionLocal
 from db.tdengine import td_fetch, td_fetch_env
 from modules.baseline.updater import run_baseline_update
 from modules.assessment.evaluator import run_batch_assessment, assess_device
+from modules.inference.labels import LABEL_ZH
 from modules.inference.model import BehaviorLabel, get_classifier
 
 MAX_RETRIES = 3
 
-_BEHAVIOR_ZH: dict[int, str] = {
-    int(BehaviorLabel.UNKNOWN):  "未知",
-    int(BehaviorLabel.MOVEMENT): "活动",
-    int(BehaviorLabel.SLEEP):    "睡觉",
-    int(BehaviorLabel.SCRATCH):  "抓挠",
-}
+# 用 labels.py 那一份，**不在这里再抄一遍**。
+# 抄一遍的代价：加一个类别时漏改这处，库里 behavior 是对的、
+# behavior_label 写成"未知"——两列自相矛盾，而没有任何报错。
+_BEHAVIOR_ZH = LABEL_ZH
 
 _scheduler = BackgroundScheduler()
 _main_loop: asyncio.AbstractEventLoop | None = None

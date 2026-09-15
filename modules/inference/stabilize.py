@@ -85,7 +85,29 @@ def events_from_segments(segments: dict, label_to_code: dict,
     # 按开始时间排序：stabilize 是按类别分组返回的，不排的话写库顺序是乱的。
     # ts_start 上有唯一索引，乱序不会错，但日志和排查时很难看
     out.sort(key=lambda e: (e["start_time"], e["behavior_type"]))
-    return out
+
+    # 相邻且同编码的合成一段。
+    #
+    # 为什么会有这种情况：不同**类别**可以映射到同一个编码（甩身体 → 活动）。
+    # stabilize 按类别分组返回，所以时间上挨着的"活动"和"甩身体"出来是两段，
+    # 而映射之后它们的 behavior 一模一样。不合并的话库里会出现两条紧挨着、
+    # 编码相同的记录——统计时长没错，但"活动了几次"会偏大，
+    # 而且看记录完全看不出为什么会断开。
+    merged: list[dict] = []
+    for e in out:
+        if (merged and merged[-1]["behavior_type"] == e["behavior_type"]
+                and merged[-1]["end_time"] >= e["start_time"]):
+            prev = merged[-1]
+            # 置信度按时长加权平均——直接取平均的话，一段 1 秒的和一段
+            # 10 分钟的等权，结果没有意义
+            d0 = max(1, prev["end_time"] - prev["start_time"])
+            d1 = max(1, e["end_time"] - e["start_time"])
+            prev["confidence"] = round(
+                (prev["confidence"] * d0 + e["confidence"] * d1) / (d0 + d1), 4)
+            prev["end_time"] = max(prev["end_time"], e["end_time"])
+        else:
+            merged.append(dict(e))
+    return merged
 
 
 def stabilize_events(proba: np.ndarray, classes: list[str], label_to_code: dict,
