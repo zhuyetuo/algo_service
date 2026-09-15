@@ -61,13 +61,22 @@ def check(meta: dict, settings) -> tuple[list[str], list[str]]:
     hz = meta.get("hz")
     if hz and int(hz) != int(settings.imu_sample_rate):
         bad.append(
-            f"采样率不一致：模型训练用 {hz}Hz，服务按 IMU_SAMPLE_RATE="
-            f"{settings.imu_sample_rate} 推理。\n"
-            f"    → docker-compose.yml 里把 IMU_SAMPLE_RATE 改成 {hz}。\n"
-            f"    不改的话窗口覆盖的真实时长是错的（{meta.get('window_size')} 个点"
-            f"在 {settings.imu_sample_rate}Hz 下是 "
-            f"{round(float(meta.get('window_size') or 0) / float(settings.imu_sample_rate), 2)} 秒，"
-            f"训练时是 {meta.get('window_s')} 秒），特征整体偏，不报错。")
+            f"采样率不一致：模型是 {hz}Hz 数据训练的，服务喂的是 "
+            f"{settings.imu_sample_rate}Hz（IMU_SAMPLE_RATE）。\n"
+            f"    窗口**时长**是对的（都是 {settings.window_seconds} 秒），"
+            f"差的是窗口里的点数：训练 {int(float(meta.get('window_s') or 0) * int(hz))} 点，"
+            f"线上 {int(float(settings.window_seconds) * int(settings.imu_sample_rate))} 点。\n"
+            f"    训练数据是先低通再重采样到 {hz}Hz 的，高频成分被滤掉了；\n"
+            f"    直接喂 {settings.imu_sample_rate}Hz 的话模型看到的是它没见过的分布，\n"
+            f"    频域特征的频率轴也不一样。不报错，只是效果打折。\n"
+            f"    → **要加重采样**（{settings.imu_sample_rate}Hz → {hz}Hz，"
+            f"跟训练用同一套算法），不是改 IMU_SAMPLE_RATE。\n"
+            f"      把 IMU_SAMPLE_RATE 改成 {hz} 是**更糟**的：数据本身还是 "
+            f"{settings.imu_sample_rate}Hz，\n"
+            f"      只是骗代码说它是 {hz}Hz——窗口变成 "
+            f"{int(float(settings.window_seconds) * int(hz))} 点、真实时长只有 "
+            f"{round(float(settings.window_seconds) * int(hz) / int(settings.imu_sample_rate), 2)} 秒，\n"
+            f"      而且 FFT 会按错的 fs 算。")
 
     ws = meta.get("window_s")
     if ws and abs(float(ws) - float(settings.window_seconds)) > 0.01:
