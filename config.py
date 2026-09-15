@@ -56,6 +56,14 @@ class Settings(BaseSettings):
 
     # 逐窗口多数票平滑的窗口数（奇数，1 = 关闭平滑）
     smooth_window: int = 5
+    # 后处理：v2 = 稳定版 v2（viterbi 解码 + 事件段合并/过滤，跟标注平台
+    # 上效果最好的那套是同一份代码，见 modules/inference/postprocess.py）；
+    # legacy = 老路子（滑动多数票 + 连续同标签合并）。
+    #
+    # 默认 v2：老路子会把一次连续的抓挠拆成好几段，"今天抓了几次"整个偏大，
+    # 而每一条记录看起来都正常。出问题要回退的话把这个设成 legacy。
+    # smooth_window / confidence_threshold 只在 legacy 下起作用
+    postprocess: str = "v2"
 
     # 逐窗口详细推理日志（true = 每个 2s 窗口输出一行 [PC | 片上] ML=xxx）
     verbose_inference: bool = False
