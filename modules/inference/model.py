@@ -279,6 +279,42 @@ class BehaviorClassifier:
         )
         return F.extract_features(prepared, self._fs)
 
+    def predict_proba_windows(self, data: np.ndarray) -> np.ndarray:
+        """逐窗口的**全概率** (n_windows, n_classes)，列顺序 = self._classes。
+
+        稳定版 v2 要的是全概率：viterbi 的发射项是 log(p)，段的过滤看段内
+        平均/最大概率。原来那条线只留了 max（confidence），那些信息在
+        predict_windows 里就被丢掉了，拿不回来。
+
+        这里**不做**平滑、不做置信度打 UNKNOWN：那两件事是老后处理的手段，
+        v2 里由 viterbi 和段过滤接手，再叠一层只会两边互相打架。
+        """
+        data = U.apply_scales(data, self._acc_scale, self._gyro_scale)
+        windows = segment(data, self._win, self._step)
+        if not windows:
+            return np.empty((0, len(self._classes)), dtype=np.float32)
+        X = self.extract(np.stack(windows))
+        if not hasattr(self._model, "predict_proba"):
+            # 没有 predict_proba 就没法跑 v2。**明确报错**，不要悄悄退回老路子
+            # ——退回去的话库里的事件跟配置说的不是一回事，而没有任何迹象
+            raise RuntimeError(
+                f"模型 {type(self._model).__name__} 没有 predict_proba，"
+                "跑不了稳定版 v2 后处理。把 POSTPROCESS 设成 legacy，"
+                "或者换一个能出概率的模型")
+        proba = np.asarray(self._model.predict_proba(X), dtype=np.float32)
+        # sklearn 的 classes_ 是它自己的编码顺序，不一定等于 self._classes 的
+        # 顺序。对不上的话概率会被安到别的类别上——不报错，只是全错
+        cols = getattr(self._model, "classes_", None)
+        if cols is not None and len(cols) == proba.shape[1]:
+            order = [int(c) for c in cols]
+            if order != list(range(len(self._classes))):
+                remap = np.zeros_like(proba)
+                for j, c in enumerate(order):
+                    if 0 <= c < proba.shape[1]:
+                        remap[:, c] = proba[:, j]
+                proba = remap
+        return proba
+
     def predict_windows(self, data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
         data: (N, 6) 原始 IMU 序列
@@ -320,6 +356,9 @@ class BehaviorClassifier:
 
         返回行为事件列表（参见 windows_to_events）。
         """
+        if str(getattr(settings, "postprocess", "v2")).lower() != "legacy":
+            return self._predict_v2(data, base_ts_ms, device_id)
+
         labels, confidences = self.predict_windows(data)
         if len(labels) == 0:
             return []
@@ -330,6 +369,30 @@ class BehaviorClassifier:
         return windows_to_events(
             labels, confidences, self._win, self._step, self._fs, base_ts_ms
         )
+
+    def _predict_v2(self, data, base_ts_ms: int, device_id: int | None) -> list[dict]:
+        """稳定版 v2：跟标注平台上「稳定版 v2」同一套规则（见 stabilize.py）。"""
+        from modules.inference import stabilize as S
+
+        proba = self.predict_proba_windows(data)
+        if len(proba) == 0:
+            return []
+
+        if settings.verbose_inference:
+            labels = np.array([self._label_map.get(int(i), int(BehaviorLabel.UNKNOWN))
+                               for i in proba.argmax(axis=1)])
+            self._log_windows(labels, proba.max(axis=1), base_ts_ms, device_id)
+
+        return S.stabilize_events(
+            proba, list(self._classes), self._zh_to_code(),
+            base_ts_ms, self._win, self._step, self._fs,
+        )
+
+    def _zh_to_code(self) -> dict:
+        """类别中文名 → BehaviorLabel。按名字查，不按下标——
+        换模型时 classes 的顺序可能变，写死下标会把睡觉记成抓挠。"""
+        return {name: int(_ZH_TO_LABEL[name]) for name in self._classes
+                if name in _ZH_TO_LABEL}
 
     def _log_windows(self, labels, confidences, base_ts_ms, device_id) -> None:
         pc_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
