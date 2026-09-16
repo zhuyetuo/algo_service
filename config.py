@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     # 默认用 5 类的那个（活动/睡觉/抓挠/未佩戴/甩身体，16Hz，1s 窗口）——
     # 就是线上 label_service 和标注平台「稳定版 v2」在用的那份，效果最好。
     # 老的 3 类模型还在 weights/ml_rf.pkl，MODEL_PATH 指回去就能换。
+    # 只用加速计的那版（陀螺仪费电，在评估要不要砍）放 weights/acc3_rf/，
+    # 见那个目录的 README——切过去日汇总的数会变（动的类掉、静止的类涨），
+    # 那是模型差异不是 bug。
     # 几何（采样率/窗口/步长）由模型自己的 .json 决定，换模型不用改别的配置。
     model_path: str = "weights/stable_v2_rf/ml_rf.pkl"
 
