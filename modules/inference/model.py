@@ -124,6 +124,13 @@ class BehaviorClassifier:
             raise FileNotFoundError(f"模型文件不存在：{path}")
         self._model = joblib.load(path)
 
+        # meta 必须在这里读——下面的几何解析要用它。
+        # 曾经写在几何那段**后面**，于是 __init__ 直接 UnboundLocalError，
+        # 分类器根本构造不出来（服务起不来）。没被发现是因为
+        # **没有任何一个测试真的 new 过 BehaviorClassifier**——
+        # 见 tests/unit/test_classifier_init.py，那条现在补上了。
+        meta = self._load_meta(path)
+
         # ── 几何以**模型元数据**为准，不是以环境变量为准 ──────────────
         #
         # 设备上报 self._device_fs（IMU_SAMPLE_RATE），模型按 self._fs 训练。
@@ -142,12 +149,20 @@ class BehaviorClassifier:
         self._conf_threshold = settings.confidence_threshold
         self._smooth_k = settings.smooth_window
 
-        meta = self._load_meta(path)
         self._classes = meta.get("classes") or _DEFAULT_CLASSES
         self._label_map = {
             i: int(_ZH_TO_LABEL.get(name, BehaviorLabel.UNKNOWN))
             for i, name in enumerate(self._classes)
         }
+
+        # 只用加速计的模型（imu_train/acc3/）训练时只用了 193 维里不含陀螺仪的
+        # 那 113 列。推理照常算 193 维，这里按下标取列——**不需要另一条预处理链**。
+        #
+        # 下标取自模型自己的 ml_*.json，不在这里按特征名现筛：这边的
+        # modules/inference/features.py 跟训练机那份 imu_train 可能不是同一版，
+        # 现筛出来的下标会整体错位，而错位**不报错**——每一维都对到别的特征上，
+        # 模型照样给得出概率。所以连 from_dim 一起存，对不上就当场报错。
+        self._feature_select, self._select_from = self._load_feature_select(meta)
 
         # 特征布局自动识别：拿模型的 n_features_in_ 反推该用哪套特征
         self._feature_mode, self._n_channels = self._detect_feature_layout()
@@ -176,6 +191,30 @@ class BehaviorClassifier:
             _logger.warning("读取模型元数据失败: %s", e)
             return {}
 
+    @staticmethod
+    def _load_feature_select(meta: dict) -> tuple[np.ndarray | None, int | None]:
+        """ml_*.json 里的 feature_select（imu_train/acc3/ 训练时写进去的）。
+
+        没有这个字段 = 老的整份喂的模型，返回 (None, None)，行为完全不变。
+        """
+        fs = meta.get("feature_select")
+        if not fs:
+            return None, None
+        try:
+            idx = np.asarray(fs["indices"], dtype=np.int64)
+            n_from = int(fs["from_dim"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError(
+                f"模型元数据里的 feature_select 格式不对（要 indices + from_dim）：{e}"
+            ) from e
+        if idx.size == 0:
+            raise ValueError("feature_select.indices 是空的")
+        if int(idx.max()) >= n_from or int(idx.min()) < 0:
+            raise ValueError(
+                f"feature_select.indices 越界：范围 [{int(idx.min())}, "
+                f"{int(idx.max())}]，而 from_dim={n_from}")
+        return idx, n_from
+
     def _detect_feature_layout(self) -> tuple[str, int]:
         """
         根据模型期望的特征数，判断该用哪套特征提取：
@@ -184,6 +223,19 @@ class BehaviorClassifier:
           legacy                      → 旧版 78 维模型（仓库内已提交的那个）
         """
         n_expected = getattr(self._model, "n_features_in_", None)
+
+        # 只用加速计那条：模型要的维数是取列之后的，而特征提取仍然按 8 通道跑。
+        # 所以先拿 from_dim 去对布局，别拿模型的 n_features_in_ 去对——
+        # 那样 113 对不上任何一条，会报"无法识别特征布局"，
+        # 而真正的情况是"这个模型只用其中 113 列"。
+        if self._feature_select is not None:
+            if n_expected is not None and int(n_expected) != int(self._feature_select.size):
+                raise ValueError(
+                    f"模型期望 {n_expected} 维，而 feature_select 给了 "
+                    f"{self._feature_select.size} 个下标。pkl 和它旁边那个 json "
+                    "不是一次训练出来的。")
+            n_expected = self._select_from
+
         candidates = [
             ("v2", 8, F.feature_dim(self._win, 8, self._fs)),
             ("v2", 6, F.feature_dim(self._win, 6, self._fs)),
@@ -213,6 +265,11 @@ class BehaviorClassifier:
         _logger.info("=" * 60)
         _logger.info("行为分类器加载完成")
         _logger.info("  模型文件 : %s  (%s)", path, type(self._model).__name__)
+        if self._feature_select is not None:
+            # **一定要打出来**：不打的话，只用加速计的模型跟整份喂的模型
+            # 在日志里长得一模一样，事后对不上数时查不出是哪个在跑
+            _logger.info("  特征取列 : 从 %s 维里取 %d 列（只用加速计，陀螺仪那些维不参与）",
+                         self._select_from, int(self._feature_select.size))
         _logger.info("  特征布局 : %s  维度=%s", mode_desc, n_feat)
         _logger.info("  类别顺序 : %s", self._classes)
 
@@ -276,7 +333,24 @@ class BehaviorClassifier:
         prepared = prepare_windows(
             windows, use_gravity_align=True, with_tilt=self._n_channels >= 8
         )
-        return F.extract_features(prepared, self._fs)
+        return self._select(F.extract_features(prepared, self._fs))
+
+    def _select(self, X: np.ndarray) -> np.ndarray:
+        """只用加速计的模型：从 193 维里取它训练时用的那 113 列。
+
+        没有 feature_select 的模型原样返回，行为不变。
+        """
+        if self._feature_select is None:
+            return X
+        got = int(X.shape[-1])
+        if got != self._select_from:
+            # 按老下标取列**不会报错**——每一维都对到别的特征上，
+            # 模型照样给得出概率。所以这里必须拦住
+            raise ValueError(
+                f"这个模型训练时是从 {self._select_from} 维里取列的，"
+                f"而这里算出来 {got} 维。两边的特征提取不是同一版——"
+                "把训练用的 imu_train 同步过来，或者重训一次。")
+        return X[:, self._feature_select]
 
     def _prepare(self, data: np.ndarray) -> np.ndarray:
         """量纲统一 +（需要时）重采样到模型的采样率。
