@@ -25,6 +25,7 @@ from loguru import logger
 
 from config import settings
 from db.client import AsyncSessionLocal, get_session
+from modules.assessment.queries import NOT_WEARING, wear_ms_sql
 from modules.inference.model import BehaviorLabel
 router = APIRouter()
 
@@ -306,14 +307,26 @@ async def assess_device(db: AsyncSession, device_id: int, stat_date_ts: int, use
         wpeb_score += intensity_weight * duration_weight
 
     # ── 3. 从行为表估算佩戴时长 ──────────────────────────────────────────
-    wear_sql = text(f"""
-        SELECT COALESCE(SUM(ts_end - ts_start), 0) AS wore_ms
-        FROM   {b_tbl}
-        WHERE  ts_start >= :day_start
-          AND  ts_start  < :day_end
-    """)
+    #
+    # **必须排掉「未佩戴」**（behavior=4）。这一段以前是"把当天所有事件的时长
+    # 加起来"，在只有 3 类的时候没问题——每个事件都意味着项圈戴在身上。
+    # 换成 5 类模型之后，摘下项圈那段会产生 behavior=4 的事件，照旧全加的话
+    # **「没戴」的时间被算成了「戴着」**，方向正好反了。
+    #
+    # 而且一处错、四处连带，全都不报错：
+    #   · wear_minutes 虚高 → 该标无效天（data_quality=1）的没标
+    #   · sleep_ratio / active_ratio 的分母偏大 → 两个比值偏低 → 状态灯判错
+    #   · off_min = 1440 - wear - loose → 偏小，而真正的未佩戴时长
+    #     明明就在 behavior=4 里
+    #   · sleep_min + move_min + scratch_min 不再约等于 wear_min，
+    #     因为多出来的那块没有任何一列装它——后端对账时就会发现"对不上"
+    #
+    # 3 类模型不产生 behavior=4，所以这个条件对老数据是个空操作，
+    # 不用区分模型版本。
+    wear_sql = text(wear_ms_sql(b_tbl))
     wore_ms = (await db.execute(wear_sql, {
         "day_start": stat_date_ts, "day_end": day_end_ts,
+        "not_worn": NOT_WEARING,
     })).scalar() or 0
     wear_minutes = int(wore_ms / 60_000)
     worn_loose_minutes = 0.0
